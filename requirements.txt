@@ -1,0 +1,11 @@
+numpy==1.26.4
+tensorflow==2.15.0
+scipy==1.13.0
+matplotlib==3.8.4
+scikit-learn==1.4.2
+pandas==2.2.2
+ipython==8.24.0
+scikit-image==0.23.2
+xgboost==2.0.3
+joblib
+opencv-python
