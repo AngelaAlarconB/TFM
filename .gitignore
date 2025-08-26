@@ -221,3 +221,9 @@ old/
 
 # Ignorar .vscode/
 .vscode/
+
+# Ignorar visualizaciones_mod/
+visualizaciones_mod/
+
+# Ignorar cache/
+cache/
