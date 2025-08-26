@@ -134,8 +134,13 @@ models = {
 mse_global = {name: None for name in models}
 mae_global = {name: None for name in models}
 r2_global = {name: None for name in models}
+mse_global_scaled = {name: None for name in models}
+mae_global_scaled = {name: None for name in models}
+r2_global_scaled = {name: None for name in models}
 mse_per_t = {name: [] for name in models}
+mse_per_t_scaled = {name: [] for name in models}
 ssim_scores = {name: [] for name in models}
+ssim_scores_scaled = {name: [] for name in models}
 best_models = {}
 
 # Validación cruzada
@@ -156,6 +161,23 @@ for name, (model, param_grid) in models.items():
     # Predicción
     y_pred_scaled = best_models[name].predict(X_test_scaled)
 
+    # Métricas normalizadas
+    mse_global_scaled[name] = mean_squared_error(y_test_scaled, y_pred_scaled)
+    mae_global_scaled[name] = mean_absolute_error(y_test_scaled, y_pred_scaled)
+    r2_global_scaled[name] = r2_score(y_test_scaled, y_pred_scaled)
+
+    mse_per_t_scaled[name] = [mean_squared_error(y_test_scaled[t], y_pred_scaled[t])
+                              for t in range(y_test_scaled.shape[0])]
+
+    # Calcular SSIM en normalizado
+    y_pred_scaled_reshaped = y_pred_scaled.reshape(y_test_scaled.shape[0], 116, 116, 1)
+    y_test_scaled_reshaped = y_test_scaled.reshape(y_test_scaled.shape[0], 116, 116, 1)
+    data_range_scaled = y_test_scaled_reshaped.max() - y_test_scaled_reshaped.min()
+    ssim_scores_scaled[name] = [ssim(y_test_scaled_reshaped[t, :, :, 0],
+                                     y_pred_scaled_reshaped[t, :, :, 0],
+                                     data_range=data_range_scaled)
+                                for t in range(y_test_scaled.shape[0])]
+    
     # Desnormalizar para métricas y visualización
     y_pred = scaler_y.inverse_transform(y_pred_scaled)
     y_test_orig = scaler_y.inverse_transform(y_test_scaled)
@@ -184,144 +206,186 @@ for name, model in best_models.items():
 joblib.dump(scaler_X, os.path.join(model_dir, "scaler_X.pkl"))
 joblib.dump(scaler_y, os.path.join(model_dir, "scaler_y.pkl"))
 
-# Visualización del MSE
+# MSE visualization
 plt.figure(figsize=(12, 6))
 for name, mse_values in mse_per_t.items():
     plt.plot(range(EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE,
                    EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE + len(mse_values)),
-             mse_values, label=f'MSE {name}')
-plt.xlabel('Tiempo t')
-plt.ylabel('MSE (predicción t+1)')
-plt.title('Error Cuadrático Medio (MSE) por Tiempo en el Conjunto de Prueba')
+             mse_values, label=f'{name} MSE')
+plt.xlabel('Time step')
+plt.ylabel('MSE')
+plt.title('Mean Squared Error (MSE) per Time Step on Test Set')
 plt.grid(True)
 plt.legend()
 plt.tight_layout()
 plt.savefig(os.path.join(model_dir, "mse.png"))
 plt.close()
 
-# Visualización de SSIM
+# Normalized MSE visualization
+plt.figure(figsize=(12, 6))
+for name, mse_values in mse_per_t_scaled.items():
+    plt.plot(range(EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE,
+                   EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE + len(mse_values)),
+             mse_values, label=f'{name} MSE (normalized)')
+plt.xlabel('Time step')
+plt.ylabel('MSE (normalized)')
+plt.title('Mean Squared Error (MSE) per Time Step - Normalized Scale')
+plt.grid(True)
+plt.legend()
+plt.tight_layout()
+plt.savefig(os.path.join(model_dir, "mse_normalized.png"))
+plt.close()
+
+# SSIM visualization
 plt.figure(figsize=(12, 6))
 for name, ssim_values in ssim_scores.items():
     plt.plot(range(EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE,
                    EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE + len(ssim_values)),
-             ssim_values, label=f'SSIM {name}')
-plt.xlabel('Tiempo t')
-plt.ylabel('SSIM (predicción t+1)')
-plt.title('SSIM por Tiempo en el Conjunto de Prueba')
+             ssim_values, label=f'{name} SSIM')
+plt.xlabel('Time step')
+plt.ylabel('SSIM')
+plt.title('Structural Similarity Index (SSIM) per Time Step on Test Set')
 plt.grid(True)
 plt.legend()
 plt.tight_layout()
 plt.savefig(os.path.join(model_dir, "ssim.png"))
 plt.close()
 
-# Visualización de predicciones vs reales
+# Normalized SSIM visualization
+plt.figure(figsize=(12, 6))
+for name, ssim_values in ssim_scores_scaled.items():
+    plt.plot(range(EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE,
+                   EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE + len(ssim_values)),
+             ssim_values, label=f'{name} SSIM (normalized)')
+plt.xlabel('Time step')
+plt.ylabel('SSIM (normalized)')
+plt.title('SSIM per Time Step - Normalized Scale')
+plt.grid(True)
+plt.legend()
+plt.tight_layout()
+plt.savefig(os.path.join(model_dir, "ssim_normalized.png"))
+plt.close()
+
+# Real vs Predicted visualization (single pixel)
 pixel_idx = 50 * 116 + 50
 plt.figure(figsize=(12, 6))
 plt.plot(range(EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE,
                EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE + y_test_orig.shape[0]),
-         y_test_orig[:, pixel_idx], label='Valores Reales', alpha=0.7)
+         y_test_orig[:, pixel_idx], label='True Values', alpha=0.7)
 for name, model in best_models.items():
     y_pred_scaled = model.predict(X_test_scaled)
     y_pred = scaler_y.inverse_transform(y_pred_scaled)
     plt.plot(range(EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE,
                    EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE + y_test_orig.shape[0]),
-             y_pred[:, pixel_idx], label=f'Predicciones {name}', alpha=0.7)
-plt.xlabel('Tiempo t')
-plt.ylabel('Valor Estandarizado')
-plt.title(f'Predicciones vs Reales para el Píxel (50, 50)')
+             y_pred[:, pixel_idx], label=f'{name} Predictions', alpha=0.7)
+plt.xlabel('Time step')
+plt.ylabel('Value')
+plt.title(f'Predictions vs True Values for Pixel (50, 50)')
 plt.grid(True)
 plt.legend()
 plt.tight_layout()
-plt.savefig(os.path.join(model_dir, "predictions_vs_real.png"))
+plt.savefig(os.path.join(model_dir, "predictions_vs_true.png"))
 plt.close()
 
-# Crear videos con imágenes 2D (real, predicha, error) para cada modelo
+# Create video with 2D images (real, predicted, error) for each model
 frame_width, frame_height = 116, 116
-fig_width = frame_width * 3  # Three subplots side by side
+fig_width = frame_width * 3
 fig_height = frame_height
 
-# Loop sobre cada modelo para generar un video
 for model_name in best_models:
     output_video = os.path.join(model_dir, f"output_video_{model_name.replace(' ', '_')}.mp4")
-    print(f"Generando video para {model_name}...")
+    print(f"Generating video for {model_name}...")
 
     # Initialize video writer
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     out = cv2.VideoWriter(output_video, fourcc, FRAME_RATE, (fig_width, fig_height))
 
-    # Obtener predicciones y desnormalizar
-    y_pred = best_models[model_name].predict(X_test_scaled)  # (240, 13456)
-    y_pred_denorm = scaler_y.inverse_transform(y_pred).reshape(y_test.shape[0], 116, 116, 1)  # (240, 116, 116, 1)
-    y_test_denorm = scaler_y.inverse_transform(y_test_scaled).reshape(y_test.shape[0], 116, 116, 1)  # (240, 116, 116, 1)
+    # Obtain predictions and denormalize
+    y_pred = best_models[model_name].predict(X_test_scaled)
+    y_pred_denorm = scaler_y.inverse_transform(y_pred).reshape(y_test.shape[0], 116, 116, 1)
+    y_test_denorm = scaler_y.inverse_transform(y_test_scaled).reshape(y_test.shape[0], 116, 116, 1)
 
-    # Calcular vmin y vmax para colorbars fijos
-    vmin_test = y_test_denorm.min()
-    vmax_test = y_test_denorm.max()
-    vmin_pred = y_pred_denorm.min()
-    vmax_pred = y_pred_denorm.max()
+    # Compute vmin and vmax for consistent colorbars
+    vmin_test, vmax_test = y_test_denorm.min(), y_test_denorm.max()
+    vmin_pred, vmax_pred = y_pred_denorm.min(), y_pred_denorm.max()
     error_vmax = np.max(np.abs(y_test_denorm - y_pred_denorm))
 
     # Generate frames and write to video
     for t in range(y_test_denorm.shape[0]):
         fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(15, 5))
         
-        # Imagen real
+        # Real image
         im1 = ax1.imshow(y_test_denorm[t, :, :, 0], cmap='viridis', vmin=vmin_test, vmax=vmax_test)
         ax1.set_title('Real')
         ax1.axis('off')
         plt.colorbar(im1, ax=ax1, fraction=0.046, pad=0.04)
         
-        # Imagen predicha
+        # Predicted image
         im2 = ax2.imshow(y_pred_denorm[t, :, :, 0], cmap='viridis', vmin=vmin_pred, vmax=vmax_pred)
-        ax2.set_title(f'Predicha ({model_name})')
+        ax2.set_title('Predicted')
         ax2.axis('off')
         plt.colorbar(im2, ax=ax2, fraction=0.046, pad=0.04)
         
-        # Error 2D (diferencia absoluta)
+        # 2D Error (absolute difference)
         error = np.abs(y_test_denorm[t, :, :, 0] - y_pred_denorm[t, :, :, 0])
         im3 = ax3.imshow(error, cmap='hot', vmin=0, vmax=error_vmax)
-        ax3.set_title('Error 2D')
+        ax3.set_title('2D Error')
         ax3.axis('off')
         plt.colorbar(im3, ax=ax3, fraction=0.046, pad=0.04)
 
-        # Ajustar layout
-        plt.suptitle(f'Tiempo t = {EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE + t}, SSIM = {ssim_scores[model_name][t]:.4f}', y=0.95)
+        # Adjust layout
+        plt.suptitle(f'Time step = {EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE + t}, SSIM = {ssim_scores[model_name][t]:.4f}', y=0.95)
         plt.tight_layout()
         
-        # Convertir figura a array NumPy
+        # Convert figure to NumPy array
         fig.canvas.draw()
         frame = np.frombuffer(fig.canvas.tostring_rgb(), dtype='uint8')
         frame = frame.reshape(fig.canvas.get_width_height()[::-1] + (3,))
         
-        # Convertir de RGB a BGR para OpenCV
+        # Convert RGB to BGR for OpenCV
         frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
         
-        # Redimensionar al tamaño esperado (116*3, 116)
+        # Resize frame
         frame_resized = cv2.resize(frame_bgr, (fig_width, fig_height), interpolation=cv2.INTER_AREA)
         
-        # Escribir frame al video
+        # Write frame to video
         out.write(frame_resized)
         plt.close(fig)
 
-    # Liberar el escritor de video
     out.release()
-    print(f"Video guardado en: {output_video}")
+    print(f"Video saved at: {output_video}")
 
-# Guardar métricas
-with open(os.path.join(model_dir, "metricas.txt"), "w") as f:
-    f.write("Resultados Globales:\n")
+# Save metrics
+with open(os.path.join(model_dir, "metrics.txt"), "w") as f:
+    f.write("Global Results (Denormalized):\n")
     for name in best_models:
         f.write(f"{name}:\n")
         f.write(f"  MSE Global: {mse_global[name]:.6f}\n")
         f.write(f"  MAE Global: {mae_global[name]:.6f}\n")
         f.write(f"  R² Global: {r2_global[name]:.6f}\n")
-        f.write(f"  SSIM Promedio: {np.mean(ssim_scores[name]):.6f}\n")
+        f.write(f"  Mean SSIM: {np.mean(ssim_scores[name]):.6f}\n")
 
-# Imprimir métricas
-print("\nResultados Globales:")
+    f.write("\nGlobal Results (Normalized):\n")
+    for name in best_models:
+        f.write(f"{name}:\n")
+        f.write(f"  MSE Global: {mse_global_scaled[name]:.6f}\n")
+        f.write(f"  MAE Global: {mae_global_scaled[name]:.6f}\n")
+        f.write(f"  R² Global: {r2_global_scaled[name]:.6f}\n")
+        f.write(f"  Mean SSIM: {np.mean(ssim_scores_scaled[name]):.6f}\n")
+
+# Print metrics
+print("\nGlobal Results - Denormalized Scale:")
 for name in best_models:
     print(f"{name}:")
     print(f"  MSE Global: {mse_global[name]:.6f}")
     print(f"  MAE Global: {mae_global[name]:.6f}")
     print(f"  R² Global: {r2_global[name]:.6f}")
-    print(f"  SSIM Promedio: {np.mean(ssim_scores[name]):.6f}")
+    print(f"  Mean SSIM: {np.mean(ssim_scores[name]):.6f}")
+
+print("\nGlobal Results - Normalized Scale:")
+for name in best_models:
+    print(f"{name}:")
+    print(f"  MSE Global: {mse_global_scaled[name]:.6f}")
+    print(f"  MAE Global: {mae_global_scaled[name]:.6f}")
+    print(f"  R² Global: {r2_global_scaled[name]:.6f}")
+    print(f"  Mean SSIM: {np.mean(ssim_scores_scaled[name]):.6f}")
