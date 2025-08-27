@@ -85,7 +85,6 @@ def create_sliding_window_spatial(data, window_size=1, start_t=0, end_t=1200):
     X = np.stack(X_list, axis=0) 
     y = np.stack(y_list, axis=0) 
 
-    # Reorganizamos para formato ConvLSTM2D: (n_frames, window_size, H, W, 1)
     X = X.transpose(0, 3, 1, 2)[:, :, :, :, np.newaxis] 
     y = y[:, :, :, np.newaxis]
     return X, y
@@ -185,6 +184,7 @@ n_frames, H, W = WINDOW_SIZE, 116, 116
 model = create_conv2d_model(H, W)
 model.summary()
 
+# Entrenamos el modelo
 print("Entrenando Conv2D...")
 history = model.fit(X_train_scaled.squeeze(axis=1), y_train_scaled, epochs=EPOCHS, batch_size=BATCH_SIZE, validation_split=0.2, shuffle=False, verbose=1)
 
@@ -197,105 +197,144 @@ joblib.dump(scaler_X, os.path.join(model_dir, "scaler_X.pkl"))
 joblib.dump(scaler_y, os.path.join(model_dir, "scaler_y.pkl"))
 
 # Predecir autoregresivamente
-y_pred_scaled = np.zeros_like(y_test_scaled) 
-current_input = X_test_scaled[0:1].squeeze(axis=1)
-print(f"Initial current_input shape: {current_input.shape}")
-for t in range(y_test.shape[0]):
-    pred = model.predict(current_input, verbose=0)
-    y_pred_scaled[t] = pred[0]
+y_pred = np.zeros_like(y_test_scaled) 
+current_input = X_test_scaled[0:1].squeeze(axis=1)  
+for t in range(y_test_scaled.shape[0]):
+    pred = model.predict(current_input, verbose=0) 
+    y_pred[t] = pred[0]
     current_input = pred
-print(f"y_pred shape: {y_pred_scaled.shape}")
-print(f"y_pred range: [{y_pred_scaled.min():.4f}, {y_pred_scaled.max():.4f}]")
-print(f"y_test range: [{y_test_scaled.min():.4f}, {y_test_scaled.max():.4f}]")
+print(f"y_pred shape: {y_pred.shape}")
+print(f"y_pred range: [{y_pred.min():.4f}, {y_pred.max():.4f}]")
+print(f"y_test_scaled range: [{y_test_scaled.min():.4f}, {y_test_scaled.max():.4f}]")
 
-# Desnormalización para métricas en escala original
-y_pred_reshaped = y_pred_scaled.reshape(-1, 1)
-y_pred_denorm = scaler_y.inverse_transform(y_pred_reshaped).reshape(y_pred_scaled.shape)
+# Calcular métricas normalizadas
+mse_global_scaled = mean_squared_error(y_test_scaled.flatten(), y_pred.flatten())
+mae_global_scaled = mean_absolute_error(y_test_scaled.flatten(), y_pred.flatten())
+r2_global_scaled = r2_score(y_test_scaled.flatten(), y_pred.flatten())
 
-# Calcular métricas (usando y_test como escala original)
-mse_global = mean_squared_error(y_test.flatten(), y_pred_denorm.flatten())
-mae_global = mean_absolute_error(y_test.flatten(), y_pred_denorm.flatten())
-r2_global = r2_score(y_test.flatten(), y_pred_denorm.flatten())
+mse_per_t_scaled = [mean_squared_error(y_test_scaled[t].flatten(), y_pred[t].flatten()) for t in range(y_test_scaled.shape[0])]
 
-mse_per_t = [mean_squared_error(y_test[t].flatten(), y_pred_denorm[t].flatten()) for t in range(y_test.shape[0])]
+# SSIM normalizado
+data_range_scaled = y_test_scaled.max() - y_test_scaled.min()
+ssim_scores_scaled = [ssim(y_test_scaled[t, :, :, 0], y_pred[t, :, :, 0], data_range=data_range_scaled) 
+               for t in range(y_test_scaled.shape[0])]
+mean_ssim_scaled = np.mean(ssim_scores_scaled)
 
-# Calcular SSIM
-data_range = y_test.max() - y_test.min()
-ssim_scores = [ssim(y_test[t, :, :, 0], y_pred_denorm[t, :, :, 0], data_range=data_range) 
-               for t in range(y_test.shape[0])]
+y_test_denorm = scaler_y.inverse_transform(y_test_scaled.reshape(-1, 1)).reshape(y_test_scaled.shape)
+y_pred_denorm = scaler_y.inverse_transform(y_pred.reshape(-1, 1)).reshape(y_pred.shape)
+
+# Calcular métricas
+mse_global = mean_squared_error(y_test_denorm.flatten(), y_pred_denorm.flatten())
+mae_global = mean_absolute_error(y_test_denorm.flatten(), y_pred_denorm.flatten())
+r2_global = r2_score(y_test_denorm.flatten(), y_pred_denorm.flatten())
+
+mse_per_t = [mean_squared_error(y_test_denorm[t].flatten(), y_pred_denorm[t].flatten()) for t in range(y_test_denorm.shape[0])]
+
+# SSIM
+data_range = y_test_denorm.max() - y_test_denorm.min()
+ssim_scores = [ssim(y_test_denorm[t, :, :, 0], y_pred_denorm[t, :, :, 0], data_range=data_range) 
+               for t in range(y_test_denorm.shape[0])]
 mean_ssim = np.mean(ssim_scores)
 
-# Visualización del MSE
+# MSE visualization
 plt.figure(figsize=(12, 6))
 plt.plot(range(EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE, 
                EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE + len(mse_per_t)), 
-         mse_per_t, label='MSE Conv2D')
-plt.xlabel('Tiempo t')
-plt.ylabel('MSE (predicción t+1)')
-plt.title('Error Cuadrático Medio (MSE) por Tiempo en el Conjunto de Prueba')
+         mse_per_t, label='Conv2D MSE')
+plt.xlabel('Time step')
+plt.ylabel('MSE')
+plt.title('Mean Squared Error (MSE) per Time Step')
 plt.grid(True)
 plt.legend()
 plt.tight_layout()
 plt.savefig(os.path.join(model_dir, "mse.png"))
 plt.close()
 
-# Visualización de SSIM
+# Normalized MSE
+plt.figure(figsize=(12, 6))
+plt.plot(range(EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE,
+               EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE + len(mse_per_t_scaled)),
+         mse_per_t_scaled, label='Conv2D MSE (normalized)')
+plt.xlabel('Time step')
+plt.ylabel('MSE (normalized)')
+plt.title('Mean Squared Error (MSE) per Time Step - Normalized Scale')
+plt.grid(True)
+plt.legend()
+plt.tight_layout()
+plt.savefig(os.path.join(model_dir, "mse_normalized.png"))
+plt.close()
+
+# SSIM visualization
 plt.figure(figsize=(12, 6))
 plt.plot(range(EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE, 
                EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE + len(ssim_scores)), 
-         ssim_scores, label='SSIM Conv2D')
-plt.xlabel('Tiempo t')
-plt.ylabel('SSIM (predicción t+1)')
-plt.title('SSIM por Tiempo en el Conjunto de Prueba')
+         ssim_scores, label='Conv2D SSIM')
+plt.xlabel('Time step')
+plt.ylabel('SSIM')
+plt.title('SSIM per Time Step on Test Set')
 plt.grid(True)
 plt.legend()
 plt.tight_layout()
 plt.savefig(os.path.join(model_dir, "ssim.png"))
 plt.close()
 
-# Visualización de predicciones vs reales
-pixel_idx_x, pixel_idx_y = 50, 50
+# Normalized SSIM
 plt.figure(figsize=(12, 6))
-plt.plot(range(EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE, 
-               EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE + y_test.shape[0]), 
-         y_test[:, pixel_idx_x, pixel_idx_y, 0], label='Valores Reales', alpha=0.7)
-plt.plot(range(EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE, 
-               EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE + y_test.shape[0]), 
-         y_pred_denorm[:, pixel_idx_x, pixel_idx_y, 0], label='Predicciones Conv2D', alpha=0.7)
-plt.xlabel('Tiempo t')
-plt.ylabel('Valor Estandarizado')
-plt.title(f'Predicciones vs Reales para el Píxel ({pixel_idx_x}, {pixel_idx_y})')
+plt.plot(range(EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE,
+               EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE + len(ssim_scores_scaled)),
+         ssim_scores_scaled, label='Conv2D SSIM (normalized)')
+plt.xlabel('Time step')
+plt.ylabel('SSIM (normalized)')
+plt.title('SSIM per Time Step - Normalized Scale')
 plt.grid(True)
 plt.legend()
 plt.tight_layout()
-plt.savefig(os.path.join(model_dir, "predictions_vs_real.png"))
+plt.savefig(os.path.join(model_dir, "ssim_normalized.png"))
 plt.close()
 
 # Visualización de predicciones vs reales (zoom primeros 100 t)
+pixel_idx_x, pixel_idx_y = 50, 50
 plt.figure(figsize=(12, 6))
 plt.plot(range(EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE, 
                EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE + 100), 
-         y_test[:100, pixel_idx_x, pixel_idx_y, 0], label='Valores Reales', alpha=0.7)
+         y_test_denorm[:100, pixel_idx_x, pixel_idx_y, 0], label='True Values', alpha=0.7)
 plt.plot(range(EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE, 
                EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE + 100), 
-         y_pred_denorm[:100, pixel_idx_x, pixel_idx_y, 0], label='Predicciones Conv2D', alpha=0.7)
-
-plt.xlabel('Tiempo t')
-plt.ylabel('Valor Estandarizado')
-plt.title(f'Predicciones vs Reales (Zoom primeros 100 t) para el Píxel ({pixel_idx_x}, {pixel_idx_y})')
+         y_pred_denorm[:100, pixel_idx_x, pixel_idx_y, 0], label='Conv2D Predictions', alpha=0.7)
+plt.xlabel('Time step')
+plt.ylabel('Value')
+plt.title(f'Predictions vs True Values (zoom first 100 steps) for Pixel ({pixel_idx_x}, {pixel_idx_y})')
 plt.grid(True)
 plt.legend()
 plt.tight_layout()
-plt.savefig(os.path.join(model_dir, "predictions_vs_real_zoom100.png"))
+plt.savefig(os.path.join(model_dir, "predictions_vs_true_zoom100.png"))
 plt.close()
 
-# Visualización de la pérdida
+# Real vs Predicted visualization (single pixel)
+pixel_idx_x, pixel_idx_y = 50, 50
 plt.figure(figsize=(12, 6))
-plt.plot(history.history['loss'], label='Pérdida de Entrenamiento')
-plt.plot(history.history['val_loss'], label='Pérdida de Validación')
-plt.xlabel('Época')
-plt.ylabel('Pérdida (MSE)')
-plt.title('Pérdida durante el Entrenamiento de Conv2D')
+plt.plot(range(EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE, 
+               EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE + y_test_denorm.shape[0]), 
+         y_test_denorm[:, pixel_idx_x, pixel_idx_y, 0], label='True Values', alpha=0.7)
+plt.plot(range(EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE, 
+               EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE + y_test_denorm.shape[0]), 
+         y_pred_denorm[:, pixel_idx_x, pixel_idx_y, 0], label='Conv2D Predictions', alpha=0.7)
+plt.xlabel('Time step')
+plt.ylabel('Value')
+plt.title(f'Predictions vs True Values for Pixel ({pixel_idx_x}, {pixel_idx_y})')
+plt.grid(True)
+plt.legend()
+plt.tight_layout()
+plt.savefig(os.path.join(model_dir, "predictions_vs_true.png"))
+plt.close()
+
+# Training loss visualization
+plt.figure(figsize=(12, 6))
+plt.plot(history.history['loss'], label='Training Loss')
+plt.plot(history.history['val_loss'], label='Validation Loss')
+plt.xlabel('Epoch')
+plt.ylabel('Loss (MSE)')
+plt.title('Conv2D Training Loss')
 plt.grid(True)
 plt.legend()
 plt.tight_layout()
@@ -313,37 +352,37 @@ fourcc = cv2.VideoWriter_fourcc(*'mp4v')
 out = cv2.VideoWriter(output_video, fourcc, FRAME_RATE, (fig_width, fig_height))
 
 # Calcular vmin y vmax para colorbars fijos
-vmin_test = y_test.min()
-vmax_test = y_test.max()
+vmin_test = y_test_denorm.min()
+vmax_test = y_test_denorm.max()
 vmin_pred = y_pred_denorm.min()
 vmax_pred = y_pred_denorm.max()
-error_vmax = np.max(np.abs(y_test - y_pred_denorm))
+error_vmax = np.max(np.abs(y_test_denorm - y_pred_denorm))
 
 # Generate frames and write to video
-for t in range(y_test.shape[0]):
+for t in range(y_test_denorm.shape[0]):
     fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(15, 5))
     
     # Imagen real
-    im1 = ax1.imshow(y_test[t, :, :, 0], cmap='viridis', vmin=vmin_test, vmax=vmax_test)
+    im1 = ax1.imshow(y_test_denorm[t, :, :, 0], cmap='viridis', vmin=vmin_test, vmax=vmax_test)
     ax1.set_title('Real')
     ax1.axis('off')
     plt.colorbar(im1, ax=ax1, fraction=0.046, pad=0.04)
     
     # Imagen predicha
     im2 = ax2.imshow(y_pred_denorm[t, :, :, 0], cmap='viridis', vmin=vmin_pred, vmax=vmax_pred)
-    ax2.set_title('Predicha')
+    ax2.set_title('Predicted')
     ax2.axis('off')
     plt.colorbar(im2, ax=ax2, fraction=0.046, pad=0.04)
     
     # Error 2D (diferencia absoluta)
-    error = np.abs(y_test[t, :, :, 0] - y_pred_denorm[t, :, :, 0])
+    error = np.abs(y_test_denorm[t, :, :, 0] - y_pred_denorm[t, :, :, 0])
     im3 = ax3.imshow(error, cmap='hot', vmin=0, vmax=error_vmax)
-    ax3.set_title('Error 2D')
+    ax3.set_title('2D Error')
     ax3.axis('off')
     plt.colorbar(im3, ax=ax3, fraction=0.046, pad=0.04)
 
     # Ajustar layout
-    plt.suptitle(f'Tiempo t = {EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE + t}, SSIM = {ssim_scores[t]:.4f}', y=0.95)
+    plt.suptitle(f'Time step = {EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE + t}, SSIM = {ssim_scores[t]:.4f}', y=0.95)
     plt.tight_layout()
     
     # Convertir figura a array NumPy
@@ -354,7 +393,7 @@ for t in range(y_test.shape[0]):
     # Convertir de RGB a BGR para OpenCV
     frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
     
-    # Redimensionar al tamaño esperado (116*3, 116)
+    # Redimensionar al tamaño esperado
     frame_resized = cv2.resize(frame_bgr, (fig_width, fig_height), interpolation=cv2.INTER_AREA)
     
     # Escribir frame al video
@@ -363,19 +402,31 @@ for t in range(y_test.shape[0]):
 
 # Liberar el escritor de video
 out.release()
-print(f"Video guardado en: {output_video}")
+print(f"Video saved at: {output_video}")
 
 # Guardar métricas
 with open(os.path.join(model_dir, "metricas.txt"), "w") as f:
-    f.write("Resultados:\n")
+    f.write("Global Results for Conv2D (Denormalized):\n")
     f.write(f"  MSE Global: {mse_global:.6f}\n")
     f.write(f"  MAE Global: {mae_global:.6f}\n")
     f.write(f"  R² Global: {r2_global:.6f}\n")
-    f.write(f"  Mean SSIM: {mean_ssim:.6f}\n")
+    f.write(f"  Mean SSIM: {mean_ssim:.6f}\n\n")
+
+    f.write("Global Results for Conv2D (Normalized):\n")
+    f.write(f"  MSE Global: {mse_global_scaled:.6f}\n")
+    f.write(f"  MAE Global: {mae_global_scaled:.6f}\n")
+    f.write(f"  R² Global: {r2_global_scaled:.6f}\n")
+    f.write(f"  Mean SSIM: {mean_ssim_scaled:.6f}\n")
 
 # Imprimir métricas
-print(f"Métricas en escala original:")
-print(f"MSE global: {mse_global:.4f}")
-print(f"MAE global: {mae_global:.4f}")
-print(f"R² global: {r2_global:.4f}")
-print(f"SSIM medio: {mean_ssim:.4f}")
+print("\nGlobal Results - Denormalized Scale:")
+print(f"  MSE Global: {mse_global:.6f}")
+print(f"  MAE Global: {mae_global:.6f}")
+print(f"  R² Global: {r2_global:.6f}")
+print(f"  Mean SSIM: {mean_ssim:.6f}")
+
+print("\nGlobal Results - Normalized Scale:")
+print(f"  MSE Global: {mse_global_scaled:.6f}")
+print(f"  MAE Global: {mae_global_scaled:.6f}")
+print(f"  R² Global: {r2_global_scaled:.6f}")
+print(f"  Mean SSIM: {mean_ssim_scaled:.6f}")
