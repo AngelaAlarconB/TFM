@@ -214,7 +214,7 @@ mean_ssim = np.mean(ssim_scores)
 plt.figure(figsize=(12, 6))
 plt.plot(range(EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE, 
                EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE + len(mse_per_t)), 
-         mse_per_t, label='Conv2D MSE')
+         mse_per_t, label='ConvLSTM2D MSE')
 plt.xlabel('Time step')
 plt.ylabel('MSE')
 plt.title('Mean Squared Error (MSE) per Time Step')
@@ -228,7 +228,7 @@ plt.close()
 plt.figure(figsize=(12, 6))
 plt.plot(range(EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE,
                EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE + len(mse_per_t_scaled)),
-         mse_per_t_scaled, label='Conv2D MSE (normalized)')
+         mse_per_t_scaled, label='ConvLSTM2D MSE (normalized)')
 plt.xlabel('Time step')
 plt.ylabel('MSE (normalized)')
 plt.title('Mean Squared Error (MSE) per Time Step - Normalized Scale')
@@ -242,7 +242,7 @@ plt.close()
 plt.figure(figsize=(12, 6))
 plt.plot(range(EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE, 
                EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE + len(ssim_scores)), 
-         ssim_scores, label='Conv2D SSIM')
+         ssim_scores, label='ConvLSTM2D SSIM')
 plt.xlabel('Time step')
 plt.ylabel('SSIM')
 plt.title('SSIM per Time Step on Test Set')
@@ -256,7 +256,7 @@ plt.close()
 plt.figure(figsize=(12, 6))
 plt.plot(range(EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE,
                EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE + len(ssim_scores_scaled)),
-         ssim_scores_scaled, label='Conv2D SSIM (normalized)')
+         ssim_scores_scaled, label='ConvLSTM2D SSIM (normalized)')
 plt.xlabel('Time step')
 plt.ylabel('SSIM (normalized)')
 plt.title('SSIM per Time Step - Normalized Scale')
@@ -274,7 +274,7 @@ plt.plot(range(EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE,
          y_test_denorm[:100, pixel_idx_x, pixel_idx_y, 0], label='True Values', alpha=0.7)
 plt.plot(range(EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE, 
                EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE + 100), 
-         y_pred_denorm[:100, pixel_idx_x, pixel_idx_y, 0], label='Conv2D Predictions', alpha=0.7)
+         y_pred_denorm[:100, pixel_idx_x, pixel_idx_y, 0], label='ConvLSTM2D Predictions', alpha=0.7)
 plt.xlabel('Time step')
 plt.ylabel('Value')
 plt.title(f'Predictions vs True Values (zoom first 100 steps) for Pixel ({pixel_idx_x}, {pixel_idx_y})')
@@ -292,7 +292,7 @@ plt.plot(range(EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE,
          y_test_denorm[:, pixel_idx_x, pixel_idx_y, 0], label='True Values', alpha=0.7)
 plt.plot(range(EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE, 
                EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE + y_test_denorm.shape[0]), 
-         y_pred_denorm[:, pixel_idx_x, pixel_idx_y, 0], label='Conv2D Predictions', alpha=0.7)
+         y_pred_denorm[:, pixel_idx_x, pixel_idx_y, 0], label='ConvLSTM2D Predictions', alpha=0.7)
 plt.xlabel('Time step')
 plt.ylabel('Value')
 plt.title(f'Predictions vs True Values for Pixel ({pixel_idx_x}, {pixel_idx_y})')
@@ -308,7 +308,7 @@ plt.plot(history.history['loss'], label='Training Loss')
 plt.plot(history.history['val_loss'], label='Validation Loss')
 plt.xlabel('Epoch')
 plt.ylabel('Loss (MSE)')
-plt.title('Conv2D Training Loss')
+plt.title('ConvLSTM2D Training Loss')
 plt.grid(True)
 plt.legend()
 plt.tight_layout()
@@ -380,13 +380,13 @@ print(f"Video saved at: {output_video}")
 
 # Guardar métricas
 with open(os.path.join(model_dir, "metricas.txt"), "w") as f:
-    f.write("Global Results for Conv2D (Denormalized):\n")
+    f.write("Global Results for ConvLSTM2D (Denormalized):\n")
     f.write(f"  MSE Global: {mse_global:.6f}\n")
     f.write(f"  MAE Global: {mae_global:.6f}\n")
     f.write(f"  R² Global: {r2_global:.6f}\n")
     f.write(f"  Mean SSIM: {mean_ssim:.6f}\n\n")
 
-    f.write("Global Results for Conv2D (Normalized):\n")
+    f.write("Global Results for ConvLSTM2D (Normalized):\n")
     f.write(f"  MSE Global: {mse_global_scaled:.6f}\n")
     f.write(f"  MAE Global: {mae_global_scaled:.6f}\n")
     f.write(f"  R² Global: {r2_global_scaled:.6f}\n")

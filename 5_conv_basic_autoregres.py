@@ -85,7 +85,7 @@ def create_sliding_window_spatial(data, window_size=1, start_t=0, end_t=1200):
     X = np.stack(X_list, axis=0)
     y = np.stack(y_list, axis=0)
 
-    # Reorganizamos para formato ConvLSTM2D: (n_frames, window_size, H, W, 1)
+    # Reorganizamos para formato Conv2D: (n_frames, window_size, H, W, 1)
     X = X.transpose(0, 3, 1, 2)[:, :, :, :, np.newaxis]
     y = y[:, :, :, np.newaxis]
     return X, y
