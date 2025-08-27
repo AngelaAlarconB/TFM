@@ -153,6 +153,7 @@ n_frames, H, W = WINDOW_SIZE, 116, 116
 model = create_conv2d_model(H, W)
 model.summary()
 
+# Entrenamos el modelo
 print("Entrenando Conv2D...")
 history = model.fit(X_train_scaled.squeeze(axis=1), y_train_scaled, epochs=EPOCHS, batch_size=BATCH_SIZE, validation_split=0.2, shuffle=False, verbose=1)
 
@@ -167,6 +168,7 @@ joblib.dump(scaler_y, os.path.join(model_dir, "scaler_y.pkl"))
 # Predecir
 y_pred = model.predict(X_test_scaled.squeeze(axis=1))
 
+# Calcular métricas normalizadas
 mse_global_scaled = mean_squared_error(y_test_scaled.flatten(), y_pred.flatten())
 mae_global_scaled = mean_absolute_error(y_test_scaled.flatten(), y_pred.flatten())
 r2_global_scaled = r2_score(y_test_scaled.flatten(), y_pred.flatten())
@@ -176,7 +178,7 @@ mse_per_t_scaled = [
     for t in range(y_test_scaled.shape[0])
 ]
 
-# SSIM en normalizado
+# SSIM normalizado
 data_range_scaled = y_test_scaled.max() - y_test_scaled.min()
 ssim_scores_scaled = [
     ssim(y_test_scaled[t, :, :, 0], y_pred[t, :, :, 0], data_range=data_range_scaled)
