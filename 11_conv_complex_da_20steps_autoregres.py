@@ -225,7 +225,6 @@ model.save(os.path.join(model_dir, "model.keras"))
 joblib.dump(scaler_X, os.path.join(model_dir, "scaler_X.pkl"))
 joblib.dump(scaler_y, os.path.join(model_dir, "scaler_y.pkl"))
 
-# Predecir autoregresivamente
 # Predecimos autoregresivamente
 y_pred = np.zeros_like(y_test_scaled)
 current_input = X_test_scaled[0:1]
