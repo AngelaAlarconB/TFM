@@ -11,6 +11,8 @@ os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
 import numpy as np
 from tensorflow.keras.models import Model
 from tensorflow.keras.layers import Conv2D, ConvLSTM2D, Dropout, BatchNormalization, Lambda, Add, Input, UpSampling2D, Concatenate
+from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau, ModelCheckpoint
 import scipy.io
 import matplotlib.pyplot as plt
 import tensorflow as tf
@@ -84,39 +86,39 @@ def create_sliding_window_spatial(data, window_size=1, start_t=0, end_t=1200):
     X = np.stack(X_list, axis=0) 
     y = np.stack(y_list, axis=0) 
 
-    # Reorganizamos para formato ConvLSTM2D: (n_frames, window_size, H, W, 1)
+    # Reorganizamos para formato: (n_frames, window_size, H, W, 1)
     X = X.transpose(0, 3, 1, 2)[:, :, :, :, np.newaxis] 
     y = y[:, :, :, np.newaxis]
     return X, y
 
 # Augmentation data
-def augment_data(X, y, noise_sigma=0.01, dropout_p=0.05):
-    X_aug, y_aug = [X[i] for i in range(X.shape[0])], [y[i] for i in range(y.shape[0])]
+# def augment_data(X, y, noise_sigma=0.01, dropout_p=0.05):
+#     X_aug, y_aug = [X[i] for i in range(X.shape[0])], [y[i] for i in range(y.shape[0])]
     
-    for i in range(X.shape[0]):
-        # Ruido gaussiano adaptativo
-        if np.random.rand() > 0.5:
-            sigma = noise_sigma * np.std(X[i])
-            noise = np.random.normal(0, sigma, size=X[i].shape)
-            X_aug.append(X[i] + noise); y_aug.append(y[i])
+#     for i in range(X.shape[0]):
+#         # Ruido gaussiano adaptativo
+#         if np.random.rand() > 0.5:
+#             sigma = noise_sigma * np.std(X[i])
+#             noise = np.random.normal(0, sigma, size=X[i].shape)
+#             X_aug.append(X[i] + noise); y_aug.append(y[i])
         
-        # Perturbación temporal (shift de ±1 timestep)
-        if np.random.rand() > 0.7:
-            shift = np.random.choice([-1, 1])
-            X_shift = np.roll(X[i], shift, axis=0)
-            X_aug.append(X_shift); y_aug.append(y[i])
+#         # Perturbación temporal (shift de ±1 timestep)
+#         if np.random.rand() > 0.7:
+#             shift = np.random.choice([-1, 1])
+#             X_shift = np.roll(X[i], shift, axis=0)
+#             X_aug.append(X_shift); y_aug.append(y[i])
         
-        # Dropout espacial simulado
-        if np.random.rand() > 0.8:
-            mask = np.random.binomial(1, 1 - dropout_p, size=X[i].shape)
-            X_aug.append(X[i] * mask); y_aug.append(y[i])
+#         # Dropout espacial simulado
+#         if np.random.rand() > 0.8:
+#             mask = np.random.binomial(1, 1 - dropout_p, size=X[i].shape)
+#             X_aug.append(X[i] * mask); y_aug.append(y[i])
         
-        # Escalado global
-        if np.random.rand() > 0.8:
-            scale = np.random.uniform(0.95, 1.05)
-            X_aug.append(X[i] * scale); y_aug.append(y[i])
+#         # Escalado global
+#         if np.random.rand() > 0.8:
+#             scale = np.random.uniform(0.95, 1.05)
+#             X_aug.append(X[i] * scale); y_aug.append(y[i])
     
-    return np.array(X_aug), np.array(y_aug)
+#     return np.array(X_aug), np.array(y_aug)
 
 # Cargar datos
 try:
@@ -166,76 +168,76 @@ y_test_reshaped = y_test.reshape(-1, 1)
 y_test_scaled = scaler_y.transform(y_test_reshaped).reshape(y_test.shape)
 
 # Data augmentation (después de escalado para ruido consistente)
-X_train_scaled, y_train_scaled = augment_data(X_train_scaled, y_train_scaled)
+# X_train_scaled, y_train_scaled = augment_data(X_train_scaled, y_train_scaled)
 
 # Definimos el modelo unet
-def create_unet_model(n_frames, H, W):
+def create_unet_model(n_frames, H, W, base_filters=32, dropout=0.2, initializer=None):
     """
-    Creates a U-Net model with ConvLSTM2D for spatio-temporal prediction.
-    
-    Args:
-        n_frames: Number of time steps in the input sequence.
-        H: Height of the spatial grid.
-        W: Width of the spatial grid.
-    
-    Returns:
-        model: Compiled Keras U-Net model.
+    Spatio-temporal U-Net: ConvLSTM encoder + ConvLSTM decoder.
+    Returns a model that inputs (n_frames, H, W, 1) and predicts a single frame (H, W, 1).
     """
     inp = Input(shape=(n_frames, H, W, 1))
-    
-    # Encoder
-    e1 = ConvLSTM2D(32, (3, 3), padding='same', return_sequences=True)(inp)
+
+    # Encoder (keep return_sequences=True to pass temporal dimension)
+    e1 = ConvLSTM2D(base_filters, (3,3), padding='same', return_sequences=True, kernel_initializer=initializer)(inp)
     e1 = BatchNormalization()(e1)
-    e1 = Dropout(0.2)(e1)
-    
-    e2 = ConvLSTM2D(64, (3, 3), padding='same', return_sequences=True, strides=(2, 2))(e1)  # Downsample
+    e1 = Dropout(dropout)(e1)
+
+    # Downsample 1: use ConvLSTM with strides (reduces spatial dims)
+    e2 = ConvLSTM2D(base_filters*2, (3,3), padding='same', return_sequences=True, strides=(2,2), kernel_initializer=initializer)(e1)
     e2 = BatchNormalization()(e2)
-    e2 = Dropout(0.2)(e2)
-    
-    e3 = ConvLSTM2D(128, (3, 3), padding='same', return_sequences=True, strides=(2, 2))(e2)  # Downsample
+    e2 = Dropout(dropout)(e2)
+
+    # Downsample 2
+    e3 = ConvLSTM2D(base_filters*4, (3,3), padding='same', return_sequences=True, strides=(2,2), kernel_initializer=initializer)(e2)
     e3 = BatchNormalization()(e3)
-    e3 = Dropout(0.2)(e3)
-    
-    # Bottleneck
-    b = ConvLSTM2D(256, (3, 3), padding='same', return_sequences=False)(e3)
+    e3 = Dropout(dropout)(e3)
+
+    # Bottleneck (still return_sequences=True so decoder is symmetric)
+    b = ConvLSTM2D(base_filters*8, (3,3), padding='same', return_sequences=True, kernel_initializer=initializer)(e3)
     b = BatchNormalization()(b)
-    b = Dropout(0.2)(b)
-    
-    # Decoder
-    d1 = UpSampling2D((2, 2))(b)  # (batch_size, 58, 58, 256)
-    d1 = Concatenate()([d1, e2[:, -1]])  # (batch_size, 58, 58, 256 + 64)
-    d1 = Conv2D(128, (3, 3), padding='same', activation='relu')(d1)  # (batch_size, 58, 58, 128)
+    b = Dropout(dropout)(b)
+
+    # Decoder: upsample + ConvLSTM2D (keep sequences)
+    # Up 1 -> match e2 spatial size
+    d1 = UpSampling2D((2,2))(b[:, -1])                  # take last timestep for upsampling spatially
+    # get last encoder output spatial maps to concatenate (temporal information in encoders lost to last step here)
+    e2_last = e2[:, -1]
+    d1 = Concatenate()([d1, e2_last])
+    d1 = Conv2D(base_filters*4, (3,3), padding='same', activation='relu', kernel_initializer=initializer)(d1)
     d1 = BatchNormalization()(d1)
-    d1 = Dropout(0.2)(d1)
-    
-    d2 = UpSampling2D((2, 2))(d1)  # (batch_size, 116, 116, 128)
-    d2 = Concatenate()([d2, e1[:, -1]])  # (batch_size, 116, 116, 128 + 32)
-    d2 = Conv2D(64, (3, 3), padding='same', activation='relu')(d2)  # (batch_size, 116, 116, 64)
+    d1 = Dropout(dropout)(d1)
+
+    # Up 2 -> match e1 spatial size
+    d2 = UpSampling2D((2,2))(d1)
+    e1_last = e1[:, -1]
+    d2 = Concatenate()([d2, e1_last])
+    d2 = Conv2D(base_filters*2, (3,3), padding='same', activation='relu', kernel_initializer=initializer)(d2)
     d2 = BatchNormalization()(d2)
-    d2 = Dropout(0.2)(d2)
-    
-    # Output
-    out = Conv2D(32, (3, 3), padding='same', activation='relu')(d2)
-    out = Conv2D(1, (3, 3), padding='same', activation='linear')(out)
-    
-    # Residual connection with last input frame
-    last = Lambda(lambda z: z[:, -1])(inp)
-    out = Add()([out, last])
-    
-    model = Model(inp, out)
-    model.compile(optimizer=tf.keras.optimizers.AdamW(learning_rate=1e-3, weight_decay=1e-4), 
-                  loss=tf.keras.losses.Huber(delta=1.0), 
-                  metrics=['mae'])
+    d2 = Dropout(dropout)(d2)
+
+    # Final convs (keep spatial operations)
+    d3 = Conv2D(base_filters, (3,3), padding='same', activation='relu', kernel_initializer=initializer)(d2)
+    d3 = BatchNormalization()(d3)
+    d3 = Dropout(dropout)(d3)
+
+    # Output conv
+    out_conv = Conv2D(1, (1,1), padding='same', activation='linear', kernel_initializer=initializer)(d3)
+
+    # Weaker residual: concatenate last input frame and apply a 1x1 conv to mix (instead of direct add)
+    last_frame = Lambda(lambda z: z[:, -1, :, :, :])(inp)   # shape (batch, H, W, 1)
+    merged = Concatenate()([out_conv, last_frame])
+    out = Conv2D(1, (1,1), padding='same', activation='linear', kernel_initializer=initializer)(merged)
+
+    model = Model(inputs=inp, outputs=out)
+    opt = Adam(learning_rate=1e-4)  # lower lr than default
+    model.compile(optimizer=opt, loss="mse", metrics=['mae'])
     return model
 
 # Creamos el modelo
 n_frames, H, W = WINDOW_SIZE, 116, 116
 model = create_unet_model(n_frames, H, W)
 model.summary()
-
-# Entrenamos el modelo
-print("Entrenando...")
-history = model.fit(X_train_scaled, y_train_scaled, epochs=EPOCHS, batch_size=BATCH_SIZE, validation_split=0.2, shuffle=False, verbose=1)
 
 # Guardar el modelo
 script_name = os.path.splitext(os.path.basename(__file__))[0]
@@ -245,107 +247,164 @@ model.save(os.path.join(model_dir, "model.keras"))
 joblib.dump(scaler_X, os.path.join(model_dir, "scaler_X.pkl"))
 joblib.dump(scaler_y, os.path.join(model_dir, "scaler_y.pkl"))
 
-# Predecir autoregresivamente
-y_pred_scaled = np.zeros_like(y_test_scaled) 
+checkpoint = ModelCheckpoint(os.path.join(model_dir, "best_model.keras"), save_best_only=True, monitor='val_loss')
+es = EarlyStopping(monitor='val_loss', patience=8, restore_best_weights=True)
+rlr = ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=4, min_lr=1e-6)
+
+# Entrenamos el modelo
+print("Entrenando...")
+history = model.fit(X_train_scaled, y_train_scaled,
+                    validation_split=0.2,
+                    epochs=EPOCHS,
+                    batch_size=BATCH_SIZE,
+                    shuffle=False, 
+                    callbacks=[checkpoint, es, rlr],
+                    verbose=1)
+
+# Predecimos autoregresivamente
+y_pred = np.zeros_like(y_test_scaled)
 current_input = X_test_scaled[0:1]
-print(f"Initial current_input shape: {current_input.shape}")
-for t in range(y_test.shape[0]):
-    pred = model.predict(current_input, verbose=0)
-    y_pred_scaled[t] = pred[0]
-    pred_with_time = pred[:, np.newaxis, :, :, :]
-    current_input = np.concatenate((current_input[:, 1:, :, :, :], pred_with_time), axis=1)
-print(f"y_pred shape: {y_pred_scaled.shape}")
-print(f"y_pred range: [{y_pred_scaled.min():.4f}, {y_pred_scaled.max():.4f}]")
-print(f"y_test range: [{y_test_scaled.min():.4f}, {y_test_scaled.max():.4f}]")
+for t in range(y_test_scaled.shape[0]):
+    pred = model.predict(current_input, verbose=0) 
+    y_pred[t] = pred[0]
+    current_input = np.concatenate([current_input[:, 1:], pred[:, np.newaxis]], axis=1)
+print(f"y_pred shape: {y_pred.shape}")
+print(f"y_pred range: [{y_pred.min():.4f}, {y_pred.max():.4f}]")
+print(f"y_test_scaled range: [{y_test_scaled.min():.4f}, {y_test_scaled.max():.4f}]")
 
-# Desnormalización para métricas en escala original
-y_pred_reshaped = y_pred_scaled.reshape(-1, 1)
-y_pred_denorm = scaler_y.inverse_transform(y_pred_reshaped).reshape(y_pred_scaled.shape)
+# Calcular métricas normalizadas
+mse_global_scaled = mean_squared_error(y_test_scaled.flatten(), y_pred.flatten())
+mae_global_scaled = mean_absolute_error(y_test_scaled.flatten(), y_pred.flatten())
+r2_global_scaled = r2_score(y_test_scaled.flatten(), y_pred.flatten())
 
-# Calcular métricas (usando y_test como escala original)
-mse_global = mean_squared_error(y_test.flatten(), y_pred_denorm.flatten())
-mae_global = mean_absolute_error(y_test.flatten(), y_pred_denorm.flatten())
-r2_global = r2_score(y_test.flatten(), y_pred_denorm.flatten())
+mse_per_t_scaled = [
+    mean_squared_error(y_test_scaled[t].flatten(), y_pred[t].flatten())
+    for t in range(y_test_scaled.shape[0])
+]
 
-mse_per_t = [mean_squared_error(y_test[t].flatten(), y_pred_denorm[t].flatten()) for t in range(y_test.shape[0])]
+# SSIM normalizado
+data_range_scaled = y_test_scaled.max() - y_test_scaled.min()
+ssim_scores_scaled = [
+    ssim(y_test_scaled[t, :, :, 0], y_pred[t, :, :, 0], data_range=data_range_scaled)
+    for t in range(y_test_scaled.shape[0])
+]
+mean_ssim_scaled = np.mean(ssim_scores_scaled)
+
+y_test_denorm = scaler_y.inverse_transform(y_test_scaled.reshape(-1, 1)).reshape(y_test_scaled.shape)
+y_pred_denorm = scaler_y.inverse_transform(y_pred.reshape(-1, 1)).reshape(y_pred.shape)
+
+# Calcular métricas
+mse_global = mean_squared_error(y_test_denorm.flatten(), y_pred_denorm.flatten())
+mae_global = mean_absolute_error(y_test_denorm.flatten(), y_pred_denorm.flatten())
+r2_global = r2_score(y_test_denorm.flatten(), y_pred_denorm.flatten())
+
+mse_per_t = [mean_squared_error(y_test_denorm[t].flatten(), y_pred_denorm[t].flatten()) for t in range(y_test_denorm.shape[0])]
 
 # Calcular SSIM
-data_range = y_test.max() - y_test.min()
-ssim_scores = [ssim(y_test[t, :, :, 0], y_pred_denorm[t, :, :, 0], data_range=data_range) 
-               for t in range(y_test.shape[0])]
+data_range = y_test_denorm.max() - y_test_denorm.min()
+ssim_scores = [ssim(y_test_denorm[t, :, :, 0], y_pred_denorm[t, :, :, 0], data_range=data_range) 
+               for t in range(y_test_denorm.shape[0])]
 mean_ssim = np.mean(ssim_scores)
-
-# Visualización del MSE
+    
+# MSE visualization
 plt.figure(figsize=(12, 6))
 plt.plot(range(EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE, 
                EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE + len(mse_per_t)), 
-         mse_per_t, label='MSE Conv2D')
-plt.xlabel('Tiempo t')
-plt.ylabel('MSE (predicción t+1)')
-plt.title('Error Cuadrático Medio (MSE) por Tiempo en el Conjunto de Prueba')
+         mse_per_t, label='U-Net MSE')
+plt.xlabel('Time step')
+plt.ylabel('MSE')
+plt.title('Mean Squared Error (MSE) per Time Step')
 plt.grid(True)
 plt.legend()
 plt.tight_layout()
 plt.savefig(os.path.join(model_dir, "mse.png"))
 plt.close()
 
-# Visualización de SSIM
+# Normalized MSE
+plt.figure(figsize=(12, 6))
+plt.plot(range(EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE,
+               EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE + len(mse_per_t_scaled)),
+         mse_per_t_scaled, label='U-Net MSE (normalized)')
+plt.xlabel('Time step')
+plt.ylabel('MSE (normalized)')
+plt.title('Mean Squared Error (MSE) per Time Step - Normalized Scale')
+plt.grid(True)
+plt.legend()
+plt.tight_layout()
+plt.savefig(os.path.join(model_dir, "mse_normalized.png"))
+plt.close()
+
+# SSIM visualization
 plt.figure(figsize=(12, 6))
 plt.plot(range(EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE, 
                EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE + len(ssim_scores)), 
-         ssim_scores, label='SSIM Conv2D')
-plt.xlabel('Tiempo t')
-plt.ylabel('SSIM (predicción t+1)')
-plt.title('SSIM por Tiempo en el Conjunto de Prueba')
+         ssim_scores, label='U-Net SSIM')
+plt.xlabel('Time step')
+plt.ylabel('SSIM')
+plt.title('SSIM per Time Step on Test Set')
 plt.grid(True)
 plt.legend()
 plt.tight_layout()
 plt.savefig(os.path.join(model_dir, "ssim.png"))
 plt.close()
 
-# Visualización de predicciones vs reales
-pixel_idx_x, pixel_idx_y = 50, 50
+# Normalized SSIM
 plt.figure(figsize=(12, 6))
-plt.plot(range(EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE, 
-               EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE + y_test.shape[0]), 
-         y_test[:, pixel_idx_x, pixel_idx_y, 0], label='Valores Reales', alpha=0.7)
-plt.plot(range(EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE, 
-               EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE + y_test.shape[0]), 
-         y_pred_denorm[:, pixel_idx_x, pixel_idx_y, 0], label='Predicciones Conv2D', alpha=0.7)
-plt.xlabel('Tiempo t')
-plt.ylabel('Valor Estandarizado')
-plt.title(f'Predicciones vs Reales para el Píxel ({pixel_idx_x}, {pixel_idx_y})')
+plt.plot(range(EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE,
+               EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE + len(ssim_scores_scaled)),
+         ssim_scores_scaled, label='U-Net SSIM (normalized)')
+plt.xlabel('Time step')
+plt.ylabel('SSIM (normalized)')
+plt.title('SSIM per Time Step - Normalized Scale')
 plt.grid(True)
 plt.legend()
 plt.tight_layout()
-plt.savefig(os.path.join(model_dir, "predictions_vs_real.png"))
+plt.savefig(os.path.join(model_dir, "ssim_normalized.png"))
 plt.close()
 
 # Visualización de predicciones vs reales (zoom primeros 100 t)
+pixel_idx_x, pixel_idx_y = 50, 50
 plt.figure(figsize=(12, 6))
 plt.plot(range(EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE, 
                EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE + 100), 
-         y_test[:100, pixel_idx_x, pixel_idx_y, 0], label='Valores Reales', alpha=0.7)
+         y_test_denorm[:100, pixel_idx_x, pixel_idx_y, 0], label='True Values', alpha=0.7)
 plt.plot(range(EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE, 
                EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE + 100), 
-         y_pred_denorm[:100, pixel_idx_x, pixel_idx_y, 0], label='Predicciones Conv2D', alpha=0.7)
-
-plt.xlabel('Tiempo t')
-plt.ylabel('Valor Estandarizado')
-plt.title(f'Predicciones vs Reales (Zoom primeros 100 t) para el Píxel ({pixel_idx_x}, {pixel_idx_y})')
+         y_pred_denorm[:100, pixel_idx_x, pixel_idx_y, 0], label='U-Net Predictions', alpha=0.7)
+plt.xlabel('Time step')
+plt.ylabel('Value')
+plt.title(f'Predictions vs True Values (zoom first 100 steps) for Pixel ({pixel_idx_x}, {pixel_idx_y})')
 plt.grid(True)
 plt.legend()
 plt.tight_layout()
-plt.savefig(os.path.join(model_dir, "predictions_vs_real_zoom100.png"))
+plt.savefig(os.path.join(model_dir, "predictions_vs_true_zoom100.png"))
 plt.close()
 
-# Visualización de la pérdida
+# Real vs Predicted visualization (single pixel)
+pixel_idx_x, pixel_idx_y = 50, 50
 plt.figure(figsize=(12, 6))
-plt.plot(history.history['loss'], label='Pérdida de Entrenamiento')
-plt.plot(history.history['val_loss'], label='Pérdida de Validación')
-plt.xlabel('Época')
-plt.ylabel('Pérdida (MSE)')
-plt.title('Pérdida durante el Entrenamiento de Conv2D')
+plt.plot(range(EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE, 
+               EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE + y_test_denorm.shape[0]), 
+         y_test_denorm[:, pixel_idx_x, pixel_idx_y, 0], label='True Values', alpha=0.7)
+plt.plot(range(EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE, 
+               EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE + y_test_denorm.shape[0]), 
+         y_pred_denorm[:, pixel_idx_x, pixel_idx_y, 0], label='U-Net Predictions', alpha=0.7)
+plt.xlabel('Time step')
+plt.ylabel('Value')
+plt.title(f'Predictions vs True Values for Pixel ({pixel_idx_x}, {pixel_idx_y})')
+plt.grid(True)
+plt.legend()
+plt.tight_layout()
+plt.savefig(os.path.join(model_dir, "predictions_vs_true.png"))
+plt.close()
+
+# Training loss visualization
+plt.figure(figsize=(12, 6))
+plt.plot(history.history['loss'], label='Training Loss')
+plt.plot(history.history['val_loss'], label='Validation Loss')
+plt.xlabel('Epoch')
+plt.ylabel('Loss (MSE)')
+plt.title('U-Net Training Loss')
 plt.grid(True)
 plt.legend()
 plt.tight_layout()
@@ -363,37 +422,37 @@ fourcc = cv2.VideoWriter_fourcc(*'mp4v')
 out = cv2.VideoWriter(output_video, fourcc, FRAME_RATE, (fig_width, fig_height))
 
 # Calcular vmin y vmax para colorbars fijos
-vmin_test = y_test.min()
-vmax_test = y_test.max()
+vmin_test = y_test_denorm.min()
+vmax_test = y_test_denorm.max()
 vmin_pred = y_pred_denorm.min()
 vmax_pred = y_pred_denorm.max()
-error_vmax = np.max(np.abs(y_test - y_pred_denorm))
+error_vmax = np.max(np.abs(y_test_denorm - y_pred_denorm))
 
 # Generate frames and write to video
-for t in range(y_test.shape[0]):
+for t in range(y_test_denorm.shape[0]):
     fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(15, 5))
     
     # Imagen real
-    im1 = ax1.imshow(y_test[t, :, :, 0], cmap='viridis', vmin=vmin_test, vmax=vmax_test)
+    im1 = ax1.imshow(y_test_denorm[t, :, :, 0], cmap='viridis', vmin=vmin_test, vmax=vmax_test)
     ax1.set_title('Real')
     ax1.axis('off')
     plt.colorbar(im1, ax=ax1, fraction=0.046, pad=0.04)
     
     # Imagen predicha
     im2 = ax2.imshow(y_pred_denorm[t, :, :, 0], cmap='viridis', vmin=vmin_pred, vmax=vmax_pred)
-    ax2.set_title('Predicha')
+    ax2.set_title('Predicted')
     ax2.axis('off')
     plt.colorbar(im2, ax=ax2, fraction=0.046, pad=0.04)
     
     # Error 2D (diferencia absoluta)
-    error = np.abs(y_test[t, :, :, 0] - y_pred_denorm[t, :, :, 0])
+    error = np.abs(y_test_denorm[t, :, :, 0] - y_pred_denorm[t, :, :, 0])
     im3 = ax3.imshow(error, cmap='hot', vmin=0, vmax=error_vmax)
-    ax3.set_title('Error 2D')
+    ax3.set_title('2D Error')
     ax3.axis('off')
     plt.colorbar(im3, ax=ax3, fraction=0.046, pad=0.04)
 
     # Ajustar layout
-    plt.suptitle(f'Tiempo t = {EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE + t}, SSIM = {ssim_scores[t]:.4f}', y=0.95)
+    plt.suptitle(f'Time step = {EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE + t}, SSIM = {ssim_scores[t]:.4f}', y=0.95)
     plt.tight_layout()
     
     # Convertir figura a array NumPy
@@ -413,19 +472,31 @@ for t in range(y_test.shape[0]):
 
 # Liberar el escritor de video
 out.release()
-print(f"Video guardado en: {output_video}")
+print(f"Video saved at: {output_video}")
 
 # Guardar métricas
 with open(os.path.join(model_dir, "metricas.txt"), "w") as f:
-    f.write("Resultados:\n")
+    f.write("Global Results for U-Net (Denormalized):\n")
     f.write(f"  MSE Global: {mse_global:.6f}\n")
     f.write(f"  MAE Global: {mae_global:.6f}\n")
     f.write(f"  R² Global: {r2_global:.6f}\n")
-    f.write(f"  Mean SSIM: {mean_ssim:.6f}\n")
+    f.write(f"  Mean SSIM: {mean_ssim:.6f}\n\n")
+
+    f.write("Global Results for U-Net (Normalized):\n")
+    f.write(f"  MSE Global: {mse_global_scaled:.6f}\n")
+    f.write(f"  MAE Global: {mae_global_scaled:.6f}\n")
+    f.write(f"  R² Global: {r2_global_scaled:.6f}\n")
+    f.write(f"  Mean SSIM: {mean_ssim_scaled:.6f}\n")
 
 # Imprimir métricas
-print(f"Métricas en escala original:")
-print(f"MSE global: {mse_global:.4f}")
-print(f"MAE global: {mae_global:.4f}")
-print(f"R² global: {r2_global:.4f}")
-print(f"SSIM medio: {mean_ssim:.4f}")
+print("\nGlobal Results - Denormalized Scale:")
+print(f"  MSE Global: {mse_global:.6f}")
+print(f"  MAE Global: {mae_global:.6f}")
+print(f"  R² Global: {r2_global:.6f}")
+print(f"  Mean SSIM: {mean_ssim:.6f}")
+
+print("\nGlobal Results - Normalized Scale:")
+print(f"  MSE Global: {mse_global_scaled:.6f}")
+print(f"  MAE Global: {mae_global_scaled:.6f}")
+print(f"  R² Global: {r2_global_scaled:.6f}")
+print(f"  Mean SSIM: {mean_ssim_scaled:.6f}")
