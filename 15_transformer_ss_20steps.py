@@ -493,43 +493,46 @@ error_vmax = np.max(np.abs(y_test_denorm - y_pred_denorm))
 
 # Generate frames and write to video
 for t in range(y_test_denorm.shape[0]):
-    fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(15, 5))
+    fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(3.48, 1.16), dpi=300)
+    
+    fontsize_title = 6  
+    fontsize_ticks = 4 
     
     # Imagen real
     im1 = ax1.imshow(y_test_denorm[t, :, :, 0], cmap='viridis', vmin=vmin_test, vmax=vmax_test)
-    ax1.set_title('Real')
+    ax1.set_title('Real', fontsize=fontsize_title)
     ax1.axis('off')
-    plt.colorbar(im1, ax=ax1, fraction=0.046, pad=0.04)
+    cbar1 = plt.colorbar(im1, ax=ax1, fraction=0.046, pad=0.04)
+    cbar1.ax.tick_params(labelsize=fontsize_ticks)
     
     # Imagen predicha
     im2 = ax2.imshow(y_pred_denorm[t, :, :, 0], cmap='viridis', vmin=vmin_pred, vmax=vmax_pred)
-    ax2.set_title('Predicted')
+    ax2.set_title('Predicted', fontsize=fontsize_title)
     ax2.axis('off')
-    plt.colorbar(im2, ax=ax2, fraction=0.046, pad=0.04)
+    cbar2 = plt.colorbar(im2, ax=ax2, fraction=0.046, pad=0.04)
+    cbar2.ax.tick_params(labelsize=fontsize_ticks)
     
-    # Error 2D (diferencia absoluta)
+    # Error 2D
     error = np.abs(y_test_denorm[t, :, :, 0] - y_pred_denorm[t, :, :, 0])
     im3 = ax3.imshow(error, cmap='hot', vmin=0, vmax=error_vmax)
-    ax3.set_title('2D Error')
+    ax3.set_title('2D Error', fontsize=fontsize_title)
     ax3.axis('off')
-    plt.colorbar(im3, ax=ax3, fraction=0.046, pad=0.04)
+    cbar3 = plt.colorbar(im3, ax=ax3, fraction=0.046, pad=0.04)
+    cbar3.ax.tick_params(labelsize=fontsize_ticks)
 
     # Ajustar layout
-    plt.suptitle(f'Time step = {EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE + t}, SSIM = {ssim_scores[t]:.4f}', y=0.95)
-    plt.tight_layout()
+    plt.suptitle(f'Time step = {EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE + t}, SSIM = {ssim_scores[t]:.4f}', 
+                 y=0.98, fontsize=fontsize_title)
+    plt.tight_layout(pad=0.5)  
     
-    # Convertir figura a array NumPy
     fig.canvas.draw()
     frame = np.frombuffer(fig.canvas.tostring_rgb(), dtype='uint8')
     frame = frame.reshape(fig.canvas.get_width_height()[::-1] + (3,))
     
-    # Convertir de RGB a BGR para OpenCV
     frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
     
-    # Redimensionar al tamaño esperado (116*3, 116)
-    frame_resized = cv2.resize(frame_bgr, (fig_width, fig_height), interpolation=cv2.INTER_AREA)
+    frame_resized = cv2.resize(frame_bgr, (fig_width, fig_height), interpolation=cv2.INTER_CUBIC)
     
-    # Escribir frame al video
     out.write(frame_resized)
     plt.close(fig)
 
