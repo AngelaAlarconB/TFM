@@ -9,10 +9,7 @@ os.environ['TF_CUDNN_DETERMINISTIC'] = '1'
 os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
 
 import numpy as np
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Conv2D, Conv3D, Dropout, BatchNormalization, ZeroPadding3D, Lambda
-from tensorflow.keras.optimizers import Adam
-from tensorflow.keras.regularizers import l2
+from tensorflow.keras import layers, models
 from tensorflow.keras.callbacks import EarlyStopping
 import scipy.io
 import matplotlib.pyplot as plt
@@ -169,60 +166,90 @@ y_test_reshaped = y_test.reshape(-1, 1)
 y_test_scaled = scaler_y.transform(y_test_reshaped).reshape(y_test.shape)
 
 # Calcular min y max para clipping
-min_val = y_train_scaled.min()
-max_val = y_train_scaled.max()
+# min_val = y_train_scaled.min()
+# max_val = y_train_scaled.max()
 
 # Data augmentation (después de escalado para ruido consistente)
 X_train_scaled, y_train_scaled = augment_data(X_train_scaled, y_train_scaled)
 
-def create_conv3d_model(time_steps, H, W):
+class PredRNNCell(layers.Layer):
     """
-    Modelo Conv3D para predicción espaciotemporal.
-    
-    Args:
-        time_steps: Número de pasos temporales en la ventana.
-        H: Altura de la grilla espacial.
-        W: Anchura de la grilla espacial.
-    
-    Returns:
-        model: Modelo Keras compilado.
+    Celda PredRNN++ con memoria dual H (temporal) y M (espacial).
     """
-    model = Sequential([
-        # Bloque 1
-        Conv3D(filters=32, kernel_size=(3, 3, 3), padding='same',
-               activation='relu', kernel_regularizer=l2(1e-4),
-               input_shape=(time_steps, H, W, 1)),
-        BatchNormalization(),
-        Dropout(0.2),
+    def __init__(self, filters, kernel_size, **kwargs):
+        super(PredRNNCell, self).__init__(**kwargs)
+        self.filters = filters
+        self.kernel_size = kernel_size
+        self.conv_kwargs = dict(padding='same', kernel_initializer='glorot_uniform')
+    
+    def build(self, input_shape):
+        channels = input_shape[-1]
+        # Convoluciones para gates: input, forget, output para H y M
+        self.conv_i = layers.Conv2D(self.filters, self.kernel_size, **self.conv_kwargs)
+        self.conv_f = layers.Conv2D(self.filters, self.kernel_size, **self.conv_kwargs)
+        self.conv_o = layers.Conv2D(self.filters, self.kernel_size, **self.conv_kwargs)
+        self.conv_g = layers.Conv2D(self.filters, self.kernel_size, **self.conv_kwargs)
+        self.conv_m = layers.Conv2D(self.filters, self.kernel_size, **self.conv_kwargs)
+        super(PredRNNCell, self).build(input_shape)
+    
+    def call(self, x, states):
+        # states = [H_prev, C_prev, M_prev]
+        H_prev, C_prev, M_prev = states
+        
+        # Gates para H
+        i = tf.sigmoid(self.conv_i(tf.concat([x, H_prev], axis=-1)))
+        f = tf.sigmoid(self.conv_f(tf.concat([x, H_prev], axis=-1)))
+        o = tf.sigmoid(self.conv_o(tf.concat([x, H_prev], axis=-1)))
+        g = tf.tanh(self.conv_g(tf.concat([x, H_prev], axis=-1)))
+        C_new = f * C_prev + i * g
+        
+        # Memoria espacial M
+        M_new = tf.tanh(self.conv_m(tf.concat([x, M_prev], axis=-1)))
+        
+        H_new = o * tf.tanh(C_new + M_new)
+        
+        return H_new, [H_new, C_new, M_new]
 
-        # Bloque 2
-        Conv3D(filters=64, kernel_size=(3, 3, 3), padding='same',
-               activation='relu', kernel_regularizer=l2(1e-4)),
-        BatchNormalization(),
-        Dropout(0.2),
-
-        ZeroPadding3D(padding=((0,0),(1,1),(1,1))),
-        Conv3D(filters=32, kernel_size=(time_steps, 3, 3), padding='valid',
-               activation='relu', kernel_regularizer=l2(1e-4)),
-        BatchNormalization(),
-        Dropout(0.2),
-        Lambda(lambda x: tf.squeeze(x, axis=1)),
-
-        # Ahora la salida es 2D (H, W, canales)
-        Conv2D(filters=16, kernel_size=(3, 3), padding='same', activation='relu'),
-        BatchNormalization(),
-        Dropout(0.2),
-
-        Conv2D(filters=1, kernel_size=(3, 3), padding='same', activation='linear')
-    ])
-
-    model.compile(optimizer=Adam(learning_rate=0.001), loss='mse', metrics=['mae'])
+def build_predrnn_pp(input_shape=(20, 116, 116, 1), num_layers=3, filters=32, kernel_size=(3,3)):
+    """
+    Construye un modelo PredRNN++ completo (multi-layer) para predicción de 1 frame futuro.
+    """
+    inputs = layers.Input(shape=input_shape)
+    
+    H_list = []
+    C_list = []
+    M = tf.zeros_like(inputs[:,0])  # Memoria espacial inicial
+    
+    x = inputs
+    # Iteramos por la ventana temporal
+    for t in range(input_shape[0]):
+        x_t = x[:, t]
+        H_prev_list = []
+        C_prev_list = []
+        x_input = x_t
+        # Pila de capas
+        for l in range(num_layers):
+            H_prev = H_list[l] if len(H_list) > l else tf.zeros_like(x_input)
+            C_prev = C_list[l] if len(C_list) > l else tf.zeros_like(x_input)
+            cell = PredRNNCell(filters, kernel_size)
+            H_new, [H_new_state, C_new_state, M] = cell(x_input, [H_prev, C_prev, M])
+            x_input = H_new
+            if len(H_list) > l:
+                H_list[l] = H_new_state
+                C_list[l] = C_new_state
+            else:
+                H_list.append(H_new_state)
+                C_list.append(C_new_state)
+    
+    # Proyección final a 1 canal
+    output = layers.Conv2D(1, (3,3), padding='same', activation='linear')(x_input)
+    
+    model = models.Model(inputs=inputs, outputs=output)
+    model.compile(optimizer='adam', loss='mse', metrics=['mae'])
     return model
 
-
-# Crear y entrenar modelo
-time_steps, H, W = WINDOW_SIZE, 116, 116
-model = create_conv3d_model(time_steps, H, W)
+H, W = 116, 116
+model = build_predrnn_pp(input_shape=(WINDOW_SIZE, H, W, 1))
 model.summary()
 
 # Callbacks
@@ -232,7 +259,7 @@ early_stop = EarlyStopping(
     restore_best_weights=True
 )
 
-print("Entrenando Conv3D...")
+print("Entrenando PredRNN...")
 history = model.fit(X_train_scaled, y_train_scaled, epochs=EPOCHS, batch_size=BATCH_SIZE, validation_split=0.2, callbacks=[early_stop], shuffle=False, verbose=1)
 
 # Guardar el modelo
@@ -243,13 +270,11 @@ model.save(os.path.join(model_dir, "model.keras"))
 joblib.dump(scaler_X, os.path.join(model_dir, "scaler_X.pkl"))
 joblib.dump(scaler_y, os.path.join(model_dir, "scaler_y.pkl"))
 
-# Predecir autoregresivamente
-y_pred = np.zeros_like(y_test_scaled) 
-current_input = X_test_scaled[0:1] 
-print(f"Initial current_input shape: {current_input.shape}")
-for t in range(y_test.shape[0]):
+# Predecimos autoregresivamente
+y_pred = np.zeros_like(y_test_scaled)
+current_input = X_test_scaled[0:1]
+for t in range(y_test_scaled.shape[0]):
     pred = model.predict(current_input, verbose=0) 
-    pred = np.clip(pred, min_val, max_val)
     y_pred[t] = pred[0]
     current_input = np.concatenate([current_input[:, 1:], pred[:, np.newaxis]], axis=1)
 print(f"y_pred shape: {y_pred.shape}")
@@ -294,7 +319,7 @@ mean_ssim = np.mean(ssim_scores)
 plt.figure(figsize=(12, 6))
 plt.plot(range(EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE, 
                EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE + len(mse_per_t)), 
-         mse_per_t, label='Conv3D MSE')
+         mse_per_t, label='PredRNN++ MSE')
 plt.xlabel('Time step')
 plt.ylabel('MSE')
 plt.title('Mean Squared Error (MSE) per Time Step')
@@ -308,7 +333,7 @@ plt.close()
 plt.figure(figsize=(12, 6))
 plt.plot(range(EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE,
                EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE + len(mse_per_t_scaled)),
-         mse_per_t_scaled, label='Conv3D MSE (normalized)')
+         mse_per_t_scaled, label='PredRNN++ MSE (normalized)')
 plt.xlabel('Time step')
 plt.ylabel('MSE (normalized)')
 plt.title('Mean Squared Error (MSE) per Time Step - Normalized Scale')
@@ -322,7 +347,7 @@ plt.close()
 plt.figure(figsize=(12, 6))
 plt.plot(range(EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE, 
                EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE + len(ssim_scores)), 
-         ssim_scores, label='Conv3D SSIM')
+         ssim_scores, label='PredRNN++ SSIM')
 plt.xlabel('Time step')
 plt.ylabel('SSIM')
 plt.title('SSIM per Time Step on Test Set')
@@ -336,7 +361,7 @@ plt.close()
 plt.figure(figsize=(12, 6))
 plt.plot(range(EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE,
                EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE + len(ssim_scores_scaled)),
-         ssim_scores_scaled, label='Conv3D SSIM (normalized)')
+         ssim_scores_scaled, label='PredRNN++ SSIM (normalized)')
 plt.xlabel('Time step')
 plt.ylabel('SSIM (normalized)')
 plt.title('SSIM per Time Step - Normalized Scale')
@@ -354,7 +379,7 @@ plt.plot(range(EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE,
          y_test_denorm[:100, pixel_idx_x, pixel_idx_y, 0], label='True Values', alpha=0.7)
 plt.plot(range(EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE, 
                EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE + 100), 
-         y_pred_denorm[:100, pixel_idx_x, pixel_idx_y, 0], label='Conv3D Predictions', alpha=0.7)
+         y_pred_denorm[:100, pixel_idx_x, pixel_idx_y, 0], label='PredRNN++ Predictions', alpha=0.7)
 plt.xlabel('Time step')
 plt.ylabel('Value')
 plt.title(f'Predictions vs True Values (zoom first 100 steps) for Pixel ({pixel_idx_x}, {pixel_idx_y})')
@@ -372,7 +397,7 @@ plt.plot(range(EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE,
          y_test_denorm[:, pixel_idx_x, pixel_idx_y, 0], label='True Values', alpha=0.7)
 plt.plot(range(EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE, 
                EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE + y_test_denorm.shape[0]), 
-         y_pred_denorm[:, pixel_idx_x, pixel_idx_y, 0], label='Conv3D Predictions', alpha=0.7)
+         y_pred_denorm[:, pixel_idx_x, pixel_idx_y, 0], label='PredRNN++ Predictions', alpha=0.7)
 plt.xlabel('Time step')
 plt.ylabel('Value')
 plt.title(f'Predictions vs True Values for Pixel ({pixel_idx_x}, {pixel_idx_y})')
@@ -388,7 +413,7 @@ plt.plot(history.history['loss'], label='Training Loss')
 plt.plot(history.history['val_loss'], label='Validation Loss')
 plt.xlabel('Epoch')
 plt.ylabel('Loss (MSE)')
-plt.title('Conv3D Training Loss')
+plt.title('PredRNN++ Training Loss')
 plt.grid(True)
 plt.legend()
 plt.tight_layout()
@@ -463,13 +488,13 @@ print(f"Video saved at: {output_video}")
 
 # Guardar métricas
 with open(os.path.join(model_dir, "metricas.txt"), "w") as f:
-    f.write("Global Results for Conv3D (Denormalized):\n")
+    f.write("Global Results for PredRNN++ (Denormalized):\n")
     f.write(f"  MSE Global: {mse_global:.6f}\n")
     f.write(f"  MAE Global: {mae_global:.6f}\n")
     f.write(f"  R² Global: {r2_global:.6f}\n")
     f.write(f"  Mean SSIM: {mean_ssim:.6f}\n\n")
 
-    f.write("Global Results for Conv3D (Normalized):\n")
+    f.write("Global Results for PredRNN++ (Normalized):\n")
     f.write(f"  MSE Global: {mse_global_scaled:.6f}\n")
     f.write(f"  MAE Global: {mae_global_scaled:.6f}\n")
     f.write(f"  R² Global: {r2_global_scaled:.6f}\n")
