@@ -9,3 +9,6 @@ scikit-image==0.23.2
 xgboost==2.0.3
 joblib
 opencv-python
+ipykernel==6.28.0
+keras-tuner==1.4.7
+optuna
