@@ -314,20 +314,14 @@ def evaluate_autoregressive(model, loader, loss_fn, n_nodes, edge_index, history
     r2_normalized = r2_score(targets.flatten(), predictions.flatten())
     data_range_normalized = targets.max() - targets.min()
     per_step_mse_normalized = []
-    per_step_ssim_normalized = []
     for t in range(predictions.shape[0]):
         mse_t = mean_squared_error(targets[t], predictions[t])
-        ssim_t = structural_similarity(targets[t], predictions[t], data_range=data_range_normalized if data_range_normalized > 0 else 1)
         per_step_mse_normalized.append(mse_t)
-        per_step_ssim_normalized.append(ssim_t)
-    mean_ssim_normalized = np.mean(per_step_ssim_normalized)
 
     mse_global = mse_normalized
     mae_global = mae_normalized
     r2_global = r2_normalized
-    mean_ssim = mean_ssim_normalized
     per_step_mse = per_step_mse_normalized
-    per_step_ssim = per_step_ssim_normalized
 
     if mean is not None and std is not None:
         predictions_orig = predictions * std + mean
@@ -337,27 +331,21 @@ def evaluate_autoregressive(model, loader, loss_fn, n_nodes, edge_index, history
         r2_global = r2_score(targets_orig.flatten(), predictions_orig.flatten())
         data_range = targets_orig.max() - targets_orig.min()
         per_step_mse = []
-        per_step_ssim = []
         for t in range(predictions.shape[0]):
             mse_t = mean_squared_error(targets_orig[t], predictions_orig[t])
-            ssim_t = structural_similarity(targets_orig[t], predictions_orig[t], data_range=data_range if data_range > 0 else 1)
             per_step_mse.append(mse_t)
-            per_step_ssim.append(ssim_t)
-        mean_ssim = np.mean(per_step_ssim)
 
     print(f"Metrics in normalized scale:")
     print(f"Global MSE: {mse_normalized:.4f}")
     print(f"Global MAE: {mae_normalized:.4f}")
     print(f"Global R²: {r2_normalized:.4f}")
-    print(f"Mean SSIM: {mean_ssim_normalized:.4f}")
 
     print(f"Metrics in original scale:")
     print(f"Global MSE: {mse_global:.4f}")
     print(f"Global MAE: {mae_global:.4f}")
     print(f"Global R²: {r2_global:.4f}")
-    print(f"Mean SSIM: {mean_ssim:.4f}")
 
-    return total_loss / len(loader), rmse_normalized, mae_normalized, corr, predictions, targets, mse_global, mae_global, r2_global, mean_ssim, per_step_mse, per_step_ssim, per_step_mse_normalized, per_step_ssim_normalized
+    return total_loss / len(loader), rmse_normalized, mae_normalized, corr, predictions, targets, mse_global, mae_global, r2_global, per_step_mse, per_step_mse_normalized
 
 # 6. Visualización
 def plot_predictions(predictions, targets, vertices, sample_nodes=[0, 100, 1000], filename="t_gcn_structured_predictions.png", time_offset=405):
@@ -557,7 +545,7 @@ def main():
     plt.close()
 
     model.load_state_dict(torch.load(os.path.join(model_dir, "t_gcn_structured_best.pt")))
-    test_loss, test_rmse, test_mae, test_corr, predictions, targets, mse_global, mae_global, r2_global, mean_ssim, test_per_step_mse, test_per_step_ssim, test_per_step_mse_normalized, test_per_step_ssim_normalized = evaluate_autoregressive(
+    test_loss, test_rmse, test_mae, test_corr, predictions, targets, mse_global, mae_global, r2_global, test_per_step_mse, test_per_step_mse_normalized = evaluate_autoregressive(
         model, test_loader, loss_fn, n_nodes, edge_index, history=20, mean=mean, std=std
     )
     print(f"T-GCN Autoregressive: MSE = {test_loss:.6f}, RMSE = {test_rmse:.6f}, MAE = {test_mae:.6f}, Corr = {test_corr:.6f}")
@@ -577,13 +565,12 @@ def main():
         f.write(f"Global MSE: {mse_global:.4f}\n")
         f.write(f"Global MAE: {mae_global:.4f}\n")
         f.write(f"Global R²: {r2_global:.4f}\n")
-        f.write(f"Mean SSIM: {mean_ssim:.4f}\n")
     print(f"Metrics saved in: {metrics_file}")
 
     plot_predictions(predictions, targets, vertices, filename=os.path.join(model_dir, "t_gcn_structured_predictions.png"), time_offset=start_time)
     plot_3d_predictions(predictions, vertices, t=0, filename=os.path.join(model_dir, "t_gcn_structured_3d_predictions.png"), time_offset=start_time)
 
-    # Gráficas: MSE y SSIM a lo largo del tiempo para test
+    # Gráficas: MSE a lo largo del tiempo para test
     plt.figure(figsize=(10, 6))
     plt.plot(test_per_step_mse_normalized, label='MSE per step')
     plt.xlabel('Autoregressive step')
@@ -592,16 +579,6 @@ def main():
     plt.legend()
     plt.grid(True)
     plt.savefig(os.path.join(model_dir, "mse_over_time.png"))
-    plt.close()
-
-    plt.figure(figsize=(10, 6))
-    plt.plot(test_per_step_ssim_normalized, label='SSIM per step')
-    plt.xlabel('Autoregressive step')
-    plt.ylabel('SSIM (normalized scale)')
-    plt.title(f'SSIM over autoregressive steps')
-    plt.legend()
-    plt.grid(True)
-    plt.savefig(os.path.join(model_dir, "ssim_over_time.png"))
     plt.close()
 
     # Gráfica de predicción vs. real para los 3 nodos en la secuencia de test
