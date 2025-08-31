@@ -292,7 +292,6 @@ def evaluate_autoregressive(model, loader, loss_fn, n_nodes, edge_index, history
         f.write(f"Corr: {corr:.4f}\n")
         f.write(f"R²: {r2_original:.4f}\n")
         f.write(f"Mean SSIM: {mean_ssim_original:.4f}")
-        f.write(f"Metrics saved in: {metrics_file}")
 
     # Impresión de métricas
     print("\nMétricas en Escala Normalizada:")
@@ -310,8 +309,9 @@ def evaluate_autoregressive(model, loader, loss_fn, n_nodes, edge_index, history
     print(f"Corr: {corr:.4f}")
     print(f"R²: {r2_original:.4f}")
     print(f"Mean SSIM: {mean_ssim_original:.4f}")
+    print(f"Metrics saved in: {metrics_file}")
 
-    return total_loss / len(loader), rmse_normalized, mae_normalized, corr, predictions, targets, mse_original, mae_original, r2_original, mean_ssim_original, per_step_mse_original, per_step_ssim_original
+    return total_loss / len(loader), rmse_normalized, mae_normalized, corr, predictions, targets, mse_original, mae_original, r2_original, mean_ssim_original, per_step_mse_original, per_step_ssim_original, per_step_mse_normalized, per_step_ssim_normalized
 
 # 6. Visualización
 def plot_predictions(predictions, targets, vertices, sample_nodes=[0, 100, 1000], filename="t_gcn_autoreg_predictions.png"):
@@ -520,7 +520,7 @@ def main():
 
     # Evaluación en el conjunto de prueba con predicciones autoregresivas
     model.load_state_dict(torch.load(os.path.join(model_dir, "t_gcn_autoreg_best.pt")))
-    test_loss, test_rmse, test_mae, test_corr, predictions, targets, mse_global, mae_global, r2_global, mean_ssim, test_per_step_mse, test_per_step_ssim = evaluate_autoregressive(
+    test_loss, test_rmse, test_mae, test_corr, predictions, targets, mse_global, mae_global, r2_global, mean_ssim, test_per_step_mse_original, test_per_step_ssim_original, test_per_step_mse_normalized, test_per_step_ssim_normalized = evaluate_autoregressive(
         model, test_loader, loss_fn, n_nodes, edge_index, history=20, mean=mean, std=std, model_dir = model_dir
     )
     print(f"T-GCN Autoregressive: MSE = {test_loss:.6f}, RMSE = {test_rmse:.6f}, MAE = {test_mae:.6f}, Corr = {test_corr:.6f}")
@@ -530,9 +530,9 @@ def main():
 
     # Nuevas gráficas: MSE y SSIM a lo largo del tiempo (para la secuencia de test)
     plt.figure(figsize=(10, 6))
-    plt.plot(test_per_step_mse, label='MSE per step')
+    plt.plot(test_per_step_mse_normalized, label='MSE per step')
     plt.xlabel('Autoregressive step')
-    plt.ylabel('MSE (original scale)')
+    plt.ylabel('MSE (normalized scale)')
     plt.title('MSE over autoregressive steps (full test)')
     plt.legend()
     plt.grid(True)
@@ -540,9 +540,9 @@ def main():
     plt.close()
 
     plt.figure(figsize=(10, 6))
-    plt.plot(test_per_step_ssim, label='SSIM per step')
+    plt.plot(test_per_step_ssim_normalized, label='SSIM per step')
     plt.xlabel('Autoregressive step')
-    plt.ylabel('SSIM (original scale)')
+    plt.ylabel('SSIM (normalized scale)')
     plt.title('SSIM over autoregressive steps (full test)')
     plt.legend()
     plt.grid(True)
@@ -552,13 +552,14 @@ def main():
     plot_3d_predictions(predictions, vertices, t=0, filename=os.path.join(model_dir, "t_gcn_autoreg_3d_predictions.png"))
     
     # Generar video comparativo
+    frame_interval = max(1, len(predictions) // 100)
     comparative_gif = create_comparative_3d_video(
         predictions, 
         targets, 
         vertices, 
         output_file=os.path.join(model_dir, "comparative_3d_autoreg.gif"),
         sample_nodes=2000,
-        frame_interval=1
+        frame_interval=frame_interval
     )
     print(f"Video comparativo guardado en: {comparative_gif}")
 
