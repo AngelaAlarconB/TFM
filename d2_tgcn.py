@@ -14,6 +14,7 @@ import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 from matplotlib.animation import FuncAnimation, PillowWriter
 import os
+from torch_geometric.utils import to_undirected
 
 # Configuración de dispositivo
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -65,15 +66,23 @@ def load_data(file_path, cache_dir="cache_structured", max_neighbor_dist=0.2,
                 old_idx = (k * 232 * 232) + (j * 232) + i
                 new_idx = (k * 230 * 230) + (j * 230) + i
                 node_map[old_idx] = new_idx
-    vecinos_new = []
-    for i in range(N_original):
-        if node_map[i] != -1:
-            neigh = np.array(vecinos_raw[i]).flatten()
-            new_neigh = [node_map[int(val) - 1] for val in neigh if int(val) - 1 < N_original and node_map[int(val) - 1] != -1]
-            vecinos_new.append(new_neigh)
-        else:
-            vecinos_new.append([])
-    vecinos_raw = vecinos_new[:N]
+
+    vecinos_compact = [[] for _ in range(N)]
+    for old_i in range(N_original):
+        new_i = node_map[old_i]
+        if new_i == -1:
+            continue
+        neigh = np.array(vecinos_raw[old_i]).flatten()
+        new_neigh = []
+        for v in neigh:
+            old_j = int(v) - 1
+            if 0 <= old_j < N_original:
+                new_j = node_map[old_j]
+                if new_j != -1:
+                    new_neigh.append(new_j)
+        vecinos_compact[new_i] = new_neigh
+
+    vecinos_raw = vecinos_compact
 
     print(f"X range before scaling: [{vertices[:,0].min():.3f}, {vertices[:,0].max():.3f}]")
     print(f"Y range before scaling: [{vertices[:,1].min():.3f}, {vertices[:,1].max():.3f}]")
@@ -220,24 +229,30 @@ def create_data_list(X, Y, edge_index):
 
 # 4. Modelo T-GCN
 class TGCN(nn.Module):
-    def __init__(self, in_channels, hidden_channels, gru_hidden):
+    def __init__(self, hidden_channels=16, gru_hidden=32, dropout_p=0.1, stride=1):
         super().__init__()
-        self.conv1 = GCNConv(in_channels, hidden_channels)
-        self.gru = GRU(hidden_channels, gru_hidden, batch_first=True)
-        self.conv2 = GCNConv(gru_hidden, 1)
+        self.conv1 = GCNConv(1, hidden_channels)
         self.relu = nn.ReLU()
-        self.dropout = nn.Dropout(0.3)
+        self.gru_cell = nn.GRUCell(hidden_channels, gru_hidden)
+        self.conv2 = GCNConv(gru_hidden, 1)
+        self.dropout = nn.Dropout(dropout_p)
+        self.stride = stride  # opcional: procesa cada 2 pasos para abaratar
 
     def forward(self, x, edge_index):
-        x = self.conv1(x, edge_index)
-        x = self.relu(x)
-        x = x.unsqueeze(0)
-        x, _ = self.gru(x)
-        x = x.squeeze(0)
-        x = self.dropout(x)
-        x = self.conv2(x, edge_index)
-        return x.squeeze()
+        # x: (n_nodes, history)  | tratamos nodos como batch
+        n_nodes, history = x.shape
+        h = x.new_zeros((n_nodes, self.gru_cell.hidden_size))  # estado inicial
 
+        # Recorremos el histórico sin almacenar toda la secuencia (memoria O(n_nodes*hidden))
+        for t in range(0, history, self.stride):
+            xt = x[:, t].unsqueeze(1)                 # (n_nodes, 1)
+            ht = self.relu(self.conv1(xt, edge_index))# (n_nodes, hidden_channels)
+            h = self.gru_cell(ht, h)                  # (n_nodes, gru_hidden)
+
+        h = self.dropout(h)
+        out = self.conv2(h, edge_index)               # (n_nodes, 1)
+        return out.squeeze(-1)
+    
 # 5. Entrenamiento y evaluación
 def train_epoch(model, train_loader, optimizer, loss_fn):
     model.train()
@@ -278,25 +293,25 @@ def evaluate(model, loader, loss_fn, n_nodes):
 
 def evaluate_autoregressive(model, loader, loss_fn, n_nodes, edge_index, history=20, mean=None, std=None):
     model.eval()
+    edge_index = edge_index.to(device)  # mover fuera del bucle
+
     total_loss = 0
     predictions, targets = [], []
     with torch.no_grad():
         data_list = list(loader)
-        first_data = data_list[0]
-        current_window = first_data.x.cpu().numpy()
-        
+        current_window = data_list[0].x.cpu().numpy()
+
         for t, data in enumerate(data_list):
             data = data.to(device)
             input_window = torch.tensor(current_window, dtype=torch.float32).to(device)
-            edge_index = edge_index.to(device)
-            print(f"Snapshot {t}: edge_index max={edge_index.max().item()}, min={edge_index.min().item()}")
+
             out = model(input_window, edge_index)
             loss = loss_fn(out, data.y)
             total_loss += loss.item()
-            
+
             predictions.append(out.cpu().numpy())
             targets.append(data.y.cpu().numpy())
-            
+
             if t < len(data_list) - 1:
                 current_window = np.roll(current_window, -1, axis=1)
                 current_window[:, -1] = out.cpu().numpy()
@@ -348,14 +363,14 @@ def evaluate_autoregressive(model, loader, loss_fn, n_nodes, edge_index, history
     return total_loss / len(loader), rmse_normalized, mae_normalized, corr, predictions, targets, mse_global, mae_global, r2_global, per_step_mse, per_step_mse_normalized
 
 # 6. Visualización
-def plot_predictions(predictions, targets, vertices, sample_nodes=[0, 100, 1000], filename="t_gcn_structured_predictions.png", time_offset=405):
+def plot_predictions(predictions, targets, vertices, sample_nodes=[0, 100, 1000], filename="t_gcn_structured_predictions.png", start_time=0):
     fig, axes = plt.subplots(len(sample_nodes), 1, figsize=(10, 5*len(sample_nodes)))
     if len(sample_nodes) == 1:
         axes = [axes]
     for i, node in enumerate(sample_nodes):
-        axes[i].plot(range(time_offset, time_offset + len(targets)), targets[:, node], label="Ground Truth")
-        axes[i].plot(range(time_offset, time_offset + len(predictions)), predictions[:, node], label="Predicted")
-        axes[i].set_title(f"Node {node} (t={time_offset} to t={time_offset + len(targets) - 1})")
+        axes[i].plot(range(start_time, start_time + len(targets)), targets[:, node], label="Ground Truth")
+        axes[i].plot(range(start_time, start_time + len(predictions)), predictions[:, node], label="Predicted")
+        axes[i].set_title(f"Node {node} (t={start_time} to t={start_time + len(targets) - 1})")
         axes[i].set_xlabel('Original Time Step')
         axes[i].set_ylabel('Normalized PA')
         axes[i].legend()
@@ -363,7 +378,8 @@ def plot_predictions(predictions, targets, vertices, sample_nodes=[0, 100, 1000]
     plt.savefig(filename)
     plt.close()
 
-def plot_3d_predictions(predictions, vertices, t=0, filename="t_gcn_structured_3d_predictions.png", time_offset=405):
+
+def plot_3d_predictions(predictions, vertices, t=0, filename="t_gcn_structured_3d_predictions.png", start_time=0):
     fig = plt.figure(figsize=(10, 8))
     ax = fig.add_subplot(111, projection='3d')
     sc = ax.scatter(vertices[:, 0], vertices[:, 1], vertices[:, 2], c=predictions[t], cmap='viridis')
@@ -374,26 +390,25 @@ def plot_3d_predictions(predictions, vertices, t=0, filename="t_gcn_structured_3
     ax.set_xlim(0, 7)
     ax.set_ylim(0, 7)
     ax.set_zlim(vertices[:, 2].min(), vertices[:, 2].max())
-    ax.set_title(f'3D Predictions - Snapshot t={time_offset + t}')
+    ax.set_title(f'3D Predictions - Snapshot t={start_time + t}')
     plt.savefig(filename)
     plt.close()
 
-def create_comparative_3d_video(predictions, targets, vertices, output_file="comparative_3d_structured.gif", sample_nodes=2000, frame_interval=1, time_offset=1100):
+def create_comparative_3d_video(predictions, targets, vertices, output_file="comparative_3d_structured.gif", sample_nodes=2000, frame_interval=1, start_time=0):
     print("Preparing 3D comparative video...")
-    
+
     if predictions.shape != targets.shape:
         raise ValueError(f"Shapes mismatch: predictions {predictions.shape}, targets {targets.shape}")
     if predictions.shape[1] != vertices.shape[0]:
         raise ValueError(f"Number of nodes mismatch: predictions {predictions.shape[1]}, vertices {vertices.shape[0]}")
-    
+
     if sample_nodes < vertices.shape[0]:
         idx = np.random.choice(vertices.shape[0], sample_nodes, replace=False)
         vertices = vertices[idx]
         predictions = predictions[:, idx]
         targets = targets[:, idx]
-    
+
     errors = np.abs(predictions - targets)
-    
     vmin = min(np.min(predictions), np.min(targets))
     vmax = max(np.max(predictions), np.max(targets))
     error_vmax = np.max(errors)
@@ -403,70 +418,19 @@ def create_comparative_3d_video(predictions, targets, vertices, output_file="com
     ax2 = fig.add_subplot(132, projection='3d')
     ax3 = fig.add_subplot(133, projection='3d')
 
-    def init():
-        ax1.clear()
-        ax2.clear()
-        ax3.clear()
-        ax1.set_xlim(0, 7)
-        ax1.set_ylim(0, 7)
-        ax1.set_zlim(vertices[:, 2].min(), vertices[:, 2].max())
-        ax1.set_box_aspect([7, 7, vertices[:, 2].max() - vertices[:, 2].min()])
-        ax1.set_xlabel('X (cm)')
-        ax1.set_ylabel('Y (cm)')
-        ax1.set_zlabel('Z (cm)')
-        ax1.set_title('Predictions')
-
-        ax2.set_xlim(0, 7)
-        ax2.set_ylim(0, 7)
-        ax2.set_zlim(vertices[:, 2].min(), vertices[:, 2].max())
-        ax2.set_box_aspect([7, 7, vertices[:, 2].max() - vertices[:, 2].min()])
-        ax2.set_xlabel('X (cm)')
-        ax2.set_ylabel('Y (cm)')
-        ax2.set_zlabel('Z (cm)')
-        ax2.set_title('Ground Truth')
-
-        ax3.set_xlim(0, 7)
-        ax3.set_ylim(0, 7)
-        ax3.set_zlim(vertices[:, 2].min(), vertices[:, 2].max())
-        ax3.set_box_aspect([7, 7, vertices[:, 2].max() - vertices[:, 2].min()])
-        ax3.set_xlabel('X (cm)')
-        ax3.set_ylabel('Y (cm)')
-        ax3.set_zlabel('Z (cm)')
-        ax3.set_title('Absolute Error')
-        return fig,
-
     def update(t):
-        print(f"Rendering frame for t={t}")
-        ax1.clear()
-        ax2.clear()
-        ax3.clear()
-
-        ax1.set_xlim(0, 7)
-        ax1.set_ylim(0, 7)
-        ax1.set_zlim(vertices[:, 2].min(), vertices[:, 2].max())
-        ax1.set_box_aspect([7, 7, vertices[:, 2].max() - vertices[:, 2].min()])
-        ax1.set_xlabel('X (cm)')
-        ax1.set_ylabel('Y (cm)')
-        ax1.set_zlabel('Z (cm)')
-        ax1.set_title(f'Predictions - Snapshot t={time_offset + t}')
-
-        ax2.set_xlim(0, 7)
-        ax2.set_ylim(0, 7)
-        ax2.set_zlim(vertices[:, 2].min(), vertices[:, 2].max())
-        ax2.set_box_aspect([7, 7, vertices[:, 2].max() - vertices[:, 2].min()])
-        ax2.set_xlabel('X (cm)')
-        ax2.set_ylabel('Y (cm)')
-        ax2.set_zlabel('Z (cm)')
-        ax2.set_title(f'Ground Truth - Snapshot t={time_offset + t}')
-
-        ax3.set_xlim(0, 7)
-        ax3.set_ylim(0, 7)
-        ax3.set_zlim(vertices[:, 2].min(), vertices[:, 2].max())
-        ax3.set_box_aspect([7, 7, vertices[:, 2].max() - vertices[:, 2].min()])
-        ax3.set_xlabel('X (cm)')
-        ax3.set_ylabel('Y (cm)')
-        ax3.set_zlabel('Z (cm)')
-        ax3.set_title(f'Absolute Error - Snapshot t={time_offset + t}')
+        ax1.clear(); ax2.clear(); ax3.clear()
+        for ax, title in zip([ax1, ax2, ax3], ["Predictions", "Ground Truth", "Absolute Error"]):
+            ax.set_xlim(0, 7)
+            ax.set_ylim(0, 7)
+            ax.set_zlim(vertices[:, 2].min(), vertices[:, 2].max())
+            ax.set_box_aspect([7, 7, vertices[:, 2].max() - vertices[:, 2].min()])
+            ax.set_xlabel('X (cm)')
+            ax.set_ylabel('Y (cm)')
+            ax.set_zlabel('Z (cm)')
+        ax1.set_title(f'Predictions - Snapshot t={start_time + t}')
+        ax2.set_title(f'Ground Truth - Snapshot t={start_time + t}')
+        ax3.set_title(f'Absolute Error - Snapshot t={start_time + t}')
 
         sc1 = ax1.scatter(vertices[:, 0], vertices[:, 1], vertices[:, 2], c=predictions[t], cmap='viridis', s=20, vmin=vmin, vmax=vmax)
         sc2 = ax2.scatter(vertices[:, 0], vertices[:, 1], vertices[:, 2], c=targets[t], cmap='viridis', s=20, vmin=vmin, vmax=vmax)
@@ -478,13 +442,10 @@ def create_comparative_3d_video(predictions, targets, vertices, output_file="com
             plt.colorbar(sc3, ax=ax3, label='Absolute Error')
         return fig,
 
-    n_frames = len(predictions) // frame_interval
     frames = range(0, len(predictions), frame_interval)
-    anim = FuncAnimation(fig, update, init_func=init, frames=frames, interval=200, blit=False)
-
+    anim = FuncAnimation(fig, update, frames=frames, interval=200, blit=False)
     print(f"Saving GIF to {output_file}...")
-    writer = PillowWriter(fps=5)
-    anim.save(output_file, writer=writer)
+    anim.save(output_file, writer=PillowWriter(fps=5))
     plt.close()
     print("GIF generated successfully.")
     return output_file
@@ -494,21 +455,30 @@ def main():
     file_path = "datos/RotorSquare_Remod100.mat"
     PA, edge_index, vertices, _, mean, std = load_data(file_path, max_neighbor_dist=0.2, cache_dir="cache_structured", exclude_time_steps=300)
     n_nodes = PA.shape[0]
+    edge_index = to_undirected(edge_index, num_nodes=n_nodes)
+
+    history=20
+
+    if PA.shape[1] <= history:
+        raise ValueError(
+            f"Not enough time steps ({PA.shape[1]}) after exclusion for history={history}"
+        )
     
-    if PA.shape[1] < 901:  # Ajustado para cubrir hasta PA[:,900] (t=1200)
-        raise ValueError(f"PA has {PA.shape[1]} time steps; need at least 901 for t=1100 to t=1200")
-    
-    X, Y = create_autoregressive_dataset(PA, history=20, cache_dir="cache_structured")
+    X, Y = create_autoregressive_dataset(PA, history=history, cache_dir="cache_structured")
     data_list = create_data_list(X, Y, edge_index)
-    train_data = data_list[:70]
-    val_data = data_list[70:85]
-    test_data = data_list[780:]  # All remaining for full test sequence
+    n_total = len(data_list)
+    n_train = int(0.7 * n_total)
+    n_val = int(0.15 * n_total)
+
+    train_data = data_list[:n_train]
+    val_data = data_list[n_train:n_train+n_val]
+    test_data = data_list[n_train+n_val:]
     
     train_loader = DataLoader(train_data, batch_size=4, shuffle=True, pin_memory=True)
     val_loader = DataLoader(val_data, batch_size=4, pin_memory=True)
     test_loader = DataLoader(test_data, batch_size=1, shuffle=False, pin_memory=True)
     
-    model = TGCN(in_channels=20, hidden_channels=64, gru_hidden=32).to(device)
+    model = TGCN(hidden_channels=64, gru_hidden=32).to(device)
     loss_fn = nn.MSELoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-4)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=5)
@@ -550,9 +520,8 @@ def main():
     )
     print(f"T-GCN Autoregressive: MSE = {test_loss:.6f}, RMSE = {test_rmse:.6f}, MAE = {test_mae:.6f}, Corr = {test_corr:.6f}")
 
-    start_time = 1100
-    test_length = len(test_data)
-    end_time = start_time + test_length - 1
+    start_time = n_train + n_val + history
+    end_time = start_time + len(test_data) - 1
 
     metrics_file = os.path.join(model_dir, "metrics.txt")
     with open(metrics_file, 'w') as f:
@@ -567,8 +536,17 @@ def main():
         f.write(f"Global R²: {r2_global:.4f}\n")
     print(f"Metrics saved in: {metrics_file}")
 
-    plot_predictions(predictions, targets, vertices, filename=os.path.join(model_dir, "t_gcn_structured_predictions.png"), time_offset=start_time)
-    plot_3d_predictions(predictions, vertices, t=0, filename=os.path.join(model_dir, "t_gcn_structured_3d_predictions.png"), time_offset=start_time)
+    plot_predictions(predictions, targets, vertices, filename=os.path.join(model_dir, "t_gcn_structured_predictions.png"), start_time=start_time)
+    plot_3d_predictions(predictions, vertices, t=0, filename=os.path.join(model_dir, "t_gcn_structured_3d_predictions.png"), start_time=start_time)
+    comparative_gif = create_comparative_3d_video(
+        predictions, 
+        targets, 
+        vertices, 
+        output_file=os.path.join(model_dir, f"comparative_3d_structured_t{start_time}_t{end_time}.gif"),
+        sample_nodes=2000,
+        frame_interval=1,
+        start_time=start_time
+    )
 
     # Gráficas: MSE a lo largo del tiempo para test
     plt.figure(figsize=(10, 6))
@@ -580,20 +558,6 @@ def main():
     plt.grid(True)
     plt.savefig(os.path.join(model_dir, "mse_over_time.png"))
     plt.close()
-
-    # Gráfica de predicción vs. real para los 3 nodos en la secuencia de test
-    plot_predictions(predictions, targets, vertices, sample_nodes=[0, 100, 1000], filename=os.path.join(model_dir, "test_predictions_nodes.png"), time_offset=start_time)
-
-    comparative_gif = create_comparative_3d_video(
-        predictions, 
-        targets, 
-        vertices, 
-        output_file=os.path.join(model_dir, f"comparative_3d_structured_t{start_time}_t{end_time}.gif"),
-        sample_nodes=2000,
-        frame_interval=1,
-        time_offset=start_time
-    )
-    print(f"Comparative video saved in: {comparative_gif}")
 
 if __name__ == "__main__":
     main()
