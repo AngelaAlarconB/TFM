@@ -233,6 +233,20 @@ plt.tight_layout()
 plt.savefig(os.path.join(model_dir, "mse_normalized.png"))
 plt.close()
 
+# MSE normalized visualization (zoom first 100 steps)
+plt.figure(figsize=(12, 6))
+plt.plot(range(EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE, 
+               EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE + 100), 
+         mse_per_t_scaled[:100], label='Conv2D MSE (normalized)')
+plt.xlabel('Time step')
+plt.ylabel('MSE (normalized)')
+plt.title('Mean Squared Error (MSE) per Time Step (Zoom First 100 Steps) - Normalized Scale')
+plt.grid(True)
+plt.legend()
+plt.tight_layout()
+plt.savefig(os.path.join(model_dir, "mse_normalized_zoom100.png"))
+plt.close()
+
 # SSIM visualization
 plt.figure(figsize=(12, 6))
 plt.plot(range(EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE, 

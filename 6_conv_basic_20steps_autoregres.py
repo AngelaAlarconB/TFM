@@ -238,6 +238,20 @@ plt.tight_layout()
 plt.savefig(os.path.join(model_dir, "mse_normalized.png"))
 plt.close()
 
+# MSE normalized visualization (zoom first 50 steps)
+plt.figure(figsize=(12, 6))
+plt.plot(range(EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE, 
+               EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE + 50), 
+         mse_per_t_scaled[:50], label='ConvLSTM2D MSE (normalized)')
+plt.xlabel('Time step')
+plt.ylabel('MSE (normalized)')
+plt.title('Mean Squared Error (MSE) per Time Step (Zoom First 50 Steps) - Normalized Scale')
+plt.grid(True)
+plt.legend()
+plt.tight_layout()
+plt.savefig(os.path.join(model_dir, "mse_normalized_zoom50.png"))
+plt.close()
+
 # SSIM visualization
 plt.figure(figsize=(12, 6))
 plt.plot(range(EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE, 
@@ -266,22 +280,22 @@ plt.tight_layout()
 plt.savefig(os.path.join(model_dir, "ssim_normalized.png"))
 plt.close()
 
-# Visualización de predicciones vs reales (zoom primeros 100 t)
+# Visualización de predicciones vs reales (zoom primeros 50 t)
 pixel_idx_x, pixel_idx_y = 50, 50
 plt.figure(figsize=(12, 6))
 plt.plot(range(EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE, 
-               EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE + 100), 
-         y_test_denorm[:100, pixel_idx_x, pixel_idx_y, 0], label='True Values', alpha=0.7)
+               EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE + 50), 
+         y_test_denorm[:50, pixel_idx_x, pixel_idx_y, 0], label='True Values', alpha=0.7)
 plt.plot(range(EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE, 
-               EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE + 100), 
-         y_pred_denorm[:100, pixel_idx_x, pixel_idx_y, 0], label='ConvLSTM2D Predictions', alpha=0.7)
+               EXCLUDED_TIME_STEPS + split_idx + WINDOW_SIZE + 50), 
+         y_pred_denorm[:50, pixel_idx_x, pixel_idx_y, 0], label='ConvLSTM2D Predictions', alpha=0.7)
 plt.xlabel('Time step')
 plt.ylabel('Value')
-plt.title(f'Predictions vs True Values (zoom first 100 steps) for Pixel ({pixel_idx_x}, {pixel_idx_y})')
+plt.title(f'Predictions vs True Values (zoom first 50 steps) for Pixel ({pixel_idx_x}, {pixel_idx_y})')
 plt.grid(True)
 plt.legend()
 plt.tight_layout()
-plt.savefig(os.path.join(model_dir, "predictions_vs_true_zoom100.png"))
+plt.savefig(os.path.join(model_dir, "predictions_vs_true_zoom50.png"))
 plt.close()
 
 # Real vs Predicted visualization (single pixel)
